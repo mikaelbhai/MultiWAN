@@ -211,6 +211,16 @@ Full detail in [`docs/03-failover-expectations.md`](docs/03-failover-expectation
 
 ---
 
+## Collaborators
+
+- **Mikael** ([@mikaelbhai](https://github.com/mikaelbhai)) — owner, hardware, on-site testing,
+  every real-world call (flashing, wiring, network topology, what to prioritize).
+- **Claude** (Anthropic) — wrote essentially all of the code in `config/` and `package/`, the
+  install scripts, the admin UI (both the Easy Setup and Advanced views), and this
+  documentation, working interactively over the course of the build and live debugging session.
+
+---
+
 ## Sources
 
 - [OpenWrt ToH hwdata — TP-Link Archer C6 v3](https://openwrt.org/toh/hwdata/tp-link/tp-link_archer_c6_v3)
