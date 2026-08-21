@@ -1,0 +1,60 @@
+#!/bin/sh
+# /etc/hotplug.d/iface/95-mwadmin-portdetect
+#
+# Fires on netifd interface events. This is the trigger for automatic
+# "plug and test".
+#
+# WHY THE ifup EVENT AND NOT A CARRIER WATCHER:
+#
+# The brief asks for link-up detection with no polling delay. That is split
+# across two mechanisms, because the two things it implies have different
+# earliest-possible moments:
+#
+#   DISPLAYING link state   — the UI reads /sys/class/net/<port>/carrier on
+#                             every request. Always current, no daemon, no
+#                             polling interval, nothing to miss.
+#
+#   TRIGGERING a test       — cannot usefully happen at carrier-up. A DHCP
+#                             uplink has no address at that instant, so a
+#                             speed test would have nothing to bind to and no
+#                             route to use. ifup is the first moment the
+#                             interface is actually usable, and netifd raises
+#                             it immediately.
+#
+# Running a carrier-triggered test would just mean sleeping in a loop waiting
+# for what ifup already tells us. So: instant display, test at first usable
+# moment.
+
+[ -x /usr/lib/mwadmin/portdetect.sh ] || exit 0
+. /usr/lib/mwadmin/common.sh
+
+case "$INTERFACE" in
+    wan1|wan2|wan3) ;;
+    *) exit 0 ;;
+esac
+
+case "$ACTION" in
+    ifup)
+        # Auto-test only once per physical plug-in event. Without this guard,
+        # every DHCP lease renewal would kick off a fresh speed test and
+        # quietly consume bandwidth every few hours.
+        marker="$MW_RUN/autotest-$INTERFACE"
+        if [ -f "$marker" ]; then
+            log "$INTERFACE came up again (renewal); not re-testing"
+            exit 0
+        fi
+        touch "$marker"
+
+        log "$INTERFACE up — starting automatic port test"
+        # Detached: hotplug handlers must return promptly or they stall netifd.
+        ( /usr/lib/mwadmin/portdetect.sh test "$INTERFACE" >/dev/null 2>&1 ) &
+        ;;
+
+    ifdown)
+        # Clear the marker so the next genuine plug-in re-tests.
+        rm -f "$MW_RUN/autotest-$INTERFACE"
+        log "$INTERFACE down"
+        ;;
+esac
+
+exit 0

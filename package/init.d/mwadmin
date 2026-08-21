@@ -1,0 +1,96 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/mwadmin — MultiWAN admin UI service.
+#
+# Does not run a server of its own. It configures a dedicated uhttpd instance
+# bound to the LAN address and lets uhttpd's own init script supervise it.
+# One less daemon, one less thing to keep alive on a router.
+
+START=95
+STOP=10
+
+USE_PROCD=1
+
+WWW_ROOT="/www/mwadmin"
+
+configure_uhttpd() {
+    local lan_ip port
+
+    lan_ip=$(uci -q get network.lan.ipaddr)
+    port=$(uci -q get mwadmin.@main[0].port 2>/dev/null)
+    [ -z "$port" ] && port=8080
+
+    # In AP mode the LAN is a DHCP client, so there is no configured ipaddr.
+    # Fall back to the address actually assigned to br-lan.
+    if [ -z "$lan_ip" ]; then
+        lan_ip=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    fi
+
+    if [ -z "$lan_ip" ]; then
+        logger -t mwadmin "No LAN address available; admin UI not started."
+        return 1
+    fi
+
+    # ---------------------------------------------------------------------
+    # THE SECURITY-CRITICAL LINE
+    # ---------------------------------------------------------------------
+    # listen_http is set to "<lan_ip>:<port>", never "0.0.0.0:<port>".
+    # Binding to a specific address means the socket does not exist on the WAN
+    # interfaces at all. Even if a firewall rule were later added by mistake,
+    # there would be nothing listening on the WAN side to accept a connection.
+    # The firewall rule in config/20-firewall.sh is the second layer, not the
+    # only one.
+    uci set uhttpd.mwadmin='uhttpd'
+    uci -q delete uhttpd.mwadmin.listen_http
+    uci -q delete uhttpd.mwadmin.listen_https
+    uci add_list uhttpd.mwadmin.listen_http="${lan_ip}:${port}"
+    uci set uhttpd.mwadmin.home="$WWW_ROOT"
+    uci set uhttpd.mwadmin.cgi_prefix='/cgi-bin'
+    uci set uhttpd.mwadmin.index_page='index.html'
+    uci set uhttpd.mwadmin.rfc1918_filter='1'
+    uci set uhttpd.mwadmin.max_requests='6'
+    uci set uhttpd.mwadmin.max_connections='30'
+    # Speed tests and backups can legitimately take a while; the default 60 s
+    # would cut them off mid-transfer.
+    uci set uhttpd.mwadmin.script_timeout='120'
+    uci set uhttpd.mwadmin.network_timeout='60'
+    uci set uhttpd.mwadmin.no_dirlists='1'
+    uci set uhttpd.mwadmin.no_symlinks='1'
+    uci commit uhttpd
+
+    logger -t mwadmin "admin UI configured on ${lan_ip}:${port}"
+}
+
+start_service() {
+    configure_uhttpd || return 1
+
+    mkdir -p /tmp/mwadmin/ports /tmp/mwadmin/locks
+    mkdir -p /etc/mwadmin/portdata /etc/mwadmin/profiles
+
+    # Record the initial mode so the UI has something to show on a fresh install.
+    [ -f /etc/mwadmin/mode ] || echo router > /etc/mwadmin/mode
+
+    # Snapshot the working router config on first start. This is what the AP
+    # mode rollback restores, so it must exist before the user can switch.
+    if [ ! -d /etc/mwadmin/profiles/router ]; then
+        sh /usr/lib/mwadmin/modeswitch.sh save-profile router
+    fi
+
+    /etc/init.d/uhttpd reload
+}
+
+stop_service() {
+    uci -q delete uhttpd.mwadmin
+    uci commit uhttpd
+    /etc/init.d/uhttpd reload
+}
+
+service_triggers() {
+    # Rebind when the LAN address changes, otherwise the UI would keep
+    # listening on an address the router no longer has.
+    procd_add_reload_trigger "network" "mwadmin"
+}
+
+reload_service() {
+    stop_service
+    start_service
+}

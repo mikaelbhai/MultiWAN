@@ -1,0 +1,1470 @@
+#!/bin/sh
+# api.sh — endpoint implementations for the MultiWAN admin API.
+# Sourced by the CGI after authentication has already succeeded.
+
+ALL_PORTS="wan lan1 lan2 lan3 lan4"
+
+# ===========================================================================
+# DASHBOARD / STATUS
+# ===========================================================================
+
+# Parse `mwan3 status` into structured state.
+# Output format is: name:status:enabled per line.
+mwan3_iface_states() {
+    mwan3 status 2>/dev/null | \
+        sed -n 's/^[[:space:]]*interface \([a-z0-9]*\) is \([a-z]*\).*/\1:\2/p'
+}
+
+# Every member currently carrying traffic — plural, deliberately. In
+# priority-failover mode this is a single interface. In balance mode it can
+# be two or three at once, and reporting only the first (as this used to)
+# makes the dashboard flatly wrong: it shows one WAN as idle while it is
+# actually carrying half your traffic.
+mwan3_active_ifaces() {
+    mwan3 status 2>/dev/null | awk '
+        /Current ipv4 policies/ { inpol = 1; next }
+        inpol && /^$/            { exit }
+        inpol && /^[a-zA-Z_]+:/  { next }
+        inpol && /\(/            { gsub(/^[ \t]+/, ""); print $1 }
+    '
+}
+
+# failover: three distinct metrics. balance: all three tied. Mirrors the
+# same detection api_mwan_get uses, kept here too so /status doesn't have to
+# make a second round trip just to know which label to show.
+mwan3_mode() {
+    local m1 m2 m3
+    m1=$(uget mwan3.wan1_m1.metric); m2=$(uget mwan3.wan2_m2.metric); m3=$(uget mwan3.wan3_m3.metric)
+    if [ -n "$m1" ] && [ "$m1" = "$m2" ] && [ "$m1" = "$m3" ]; then
+        printf 'balance'
+    else
+        printf 'failover'
+    fi
+}
+
+api_status() {
+    local mode; mode=$(sh /usr/lib/mwadmin/modeswitch.sh mode | sed -n 's/.*"mode":"\([a-z]*\)".*/\1/p')
+    local active_list; active_list=$(mwan3_active_ifaces)
+    local active; active=$(printf '%s\n' "$active_list" | head -n1)
+    local mwmode; mwmode=$(mwan3_mode)
+    local states; states=$(mwan3_iface_states)
+
+    local uptime load memtotal memfree
+    uptime=$(awk '{printf "%d", $1}' /proc/uptime)
+    load=$(awk '{print $1}' /proc/loadavg)
+    memtotal=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+    memfree=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+
+    printf '{"ok":true,'
+    # The session id doubles as the CSRF token. Returning it here lets a page
+    # reload restore a still-valid session without asking for the password
+    # again — the cookie is HttpOnly, so the script cannot read it directly.
+    printf '%s,' "$(jstr session "$SID")"
+    printf '%s,' "$(jstr mode "${mode:-router}")"
+    printf '%s,' "$(jstr mwan_mode "$mwmode")"
+    printf '%s,' "$(jstr active_wan "${active:-none}")"
+    printf '"active_wans":['
+    local af=1 a
+    for a in $active_list; do
+        [ $af -eq 0 ] && printf ','
+        af=0
+        printf '"%s"' "$(json_escape "$a")"
+    done
+    printf '],'
+    printf '%s,' "$(jnum uptime_s "$uptime")"
+    printf '%s,' "$(jstr load1 "$load")"
+    printf '%s,' "$(jnum mem_total_kb "$memtotal")"
+    printf '%s,' "$(jnum mem_avail_kb "$memfree")"
+    printf '%s,' "$(jstr hostname "$(uget system.@system[0].hostname)")"
+    printf '%s,' "$(jstr openwrt "$(. /etc/openwrt_release; echo "$DISTRIB_RELEASE")")"
+
+    printf '"rollback":%s,' "$(sh /usr/lib/mwadmin/modeswitch.sh rollback-status)"
+
+    # Per-WAN detail: priority, tracker state, address, link speed.
+    printf '"wans":['
+    local first=1 i
+    for i in wan1 wan2 wan3; do
+        [ -z "$(uget network.$i)" ] && continue
+        [ $first -eq 0 ] && printf ','
+        first=0
+
+        local dev st addr gw metric carrier speed
+        dev=$(uget "network.$i.device")
+        st=$(printf '%s\n' "$states" | sed -n "s/^$i://p")
+        addr=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        gw=$(ip -4 route show dev "$dev" 2>/dev/null | awk '/default/{print $3; exit}')
+        metric=$(uget "network.$i.metric")
+        carrier=$(cat "/sys/class/net/$dev/carrier" 2>/dev/null || echo 0)
+        speed=$(cat "/sys/class/net/$dev/speed" 2>/dev/null)
+        case "$speed" in ''|*[!0-9]*) speed="" ;; esac
+
+        local is_active=0 a2
+        for a2 in $active_list; do [ "$a2" = "$i" ] && is_active=1; done
+
+        printf '{%s,%s,%s,%s,%s,%s,%s,%s,%s,%s}' \
+            "$(jstr name "$i")" \
+            "$(jstr device "$dev")" \
+            "$(jstr proto "$(uget "network.$i.proto")")" \
+            "$(jstr tracker "${st:-unknown}")" \
+            "$(jbool carrier "$carrier")" \
+            "$(jnum link_speed_mbps "$speed")" \
+            "$(jstr address "$addr")" \
+            "$(jstr gateway "$gw")" \
+            "$(jnum metric "$metric")" \
+            "$(jbool active "$is_active")"
+    done
+    printf ']}\n'
+}
+
+# ===========================================================================
+# WAN CONNECTION SETTINGS (static / dhcp / pppoe, per uplink)
+# ===========================================================================
+api_wan_get() {
+    local iface; iface=$(qsval iface)
+    case "$iface" in wan1|wan2|wan3) ;; *) json_error "iface must be wan1, wan2, or wan3."; return ;; esac
+    [ -z "$(uget network.$iface)" ] && { json_error "$iface is not currently configured."; return; }
+
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s,%s}\n' \
+        "$(jstr iface "$iface")" \
+        "$(jstr proto "$(uget "network.$iface.proto")")" \
+        "$(jstr ipaddr "$(uget "network.$iface.ipaddr")")" \
+        "$(jstr netmask "$(uget "network.$iface.netmask")")" \
+        "$(jstr gateway "$(uget "network.$iface.gateway")")" \
+        "$(jstr dns "$(uget "network.$iface.dns")")" \
+        "$(jstr pppoe_user "$(uget "network.$iface.username")")" \
+        "$(jbool pppoe_has_password "$([ -n "$(uget "network.$iface.password")" ] && echo 1 || echo 0)")"
+}
+
+api_wan_set() {
+    local iface proto ipaddr netmask gateway dns user pass d
+    iface=$(bodyval iface); proto=$(bodyval proto)
+    ipaddr=$(bodyval ipaddr); netmask=$(bodyval netmask); gateway=$(bodyval gateway); dns=$(bodyval dns)
+    user=$(bodyval pppoe_user); pass=$(bodyval pppoe_password)
+
+    case "$iface" in wan1|wan2|wan3) ;; *) json_error "iface must be wan1, wan2, or wan3."; return ;; esac
+    [ -z "$(uget network.$iface)" ] && { json_error "$iface is not currently configured."; return; }
+
+    # Every branch clears the fields the OTHER protocols use, so switching
+    # from static to dhcp (or back) never leaves a stale gateway/IP sitting
+    # in the config where netifd might still read it.
+    case "$proto" in
+        static)
+            valid_ipv4 "$ipaddr"  || { json_error "Invalid IP address."; return; }
+            valid_ipv4 "$netmask" || { json_error "Invalid netmask."; return; }
+            valid_ipv4 "$gateway" || { json_error "Invalid gateway."; return; }
+            uci set network.$iface.proto='static'
+            uci set network.$iface.ipaddr="$ipaddr"
+            uci set network.$iface.netmask="$netmask"
+            uci set network.$iface.gateway="$gateway"
+            uci set network.$iface.peerdns='0'
+            uci -q delete network.$iface.dns
+            for d in $dns; do
+                valid_ipv4 "$d" || { json_error "Invalid DNS server: $d"; return; }
+                uci add_list network.$iface.dns="$d"
+            done
+            uci -q delete network.$iface.username
+            uci -q delete network.$iface.password
+            uci -q delete network.$iface.keepalive
+            ;;
+        dhcp)
+            uci set network.$iface.proto='dhcp'
+            uci -q delete network.$iface.ipaddr
+            uci -q delete network.$iface.netmask
+            uci -q delete network.$iface.gateway
+            uci -q delete network.$iface.username
+            uci -q delete network.$iface.password
+            uci -q delete network.$iface.keepalive
+            if [ -n "$dns" ]; then
+                # Pin DNS even over DHCP, same reasoning as at install time:
+                # otherwise a failover changes which resolvers are in play.
+                uci set network.$iface.peerdns='0'
+                uci -q delete network.$iface.dns
+                for d in $dns; do
+                    valid_ipv4 "$d" || { json_error "Invalid DNS server: $d"; return; }
+                    uci add_list network.$iface.dns="$d"
+                done
+            else
+                uci set network.$iface.peerdns='1'
+                uci -q delete network.$iface.dns
+            fi
+            ;;
+        pppoe)
+            [ -n "$user" ] || { json_error "PPPoE username is required."; return; }
+            uci set network.$iface.proto='pppoe'
+            uci set network.$iface.username="$user"
+            [ -n "$pass" ] && uci set network.$iface.password="$pass"
+            uci set network.$iface.keepalive='5 20'
+            uci -q delete network.$iface.ipaddr
+            uci -q delete network.$iface.netmask
+            uci -q delete network.$iface.gateway
+            uci set network.$iface.peerdns='0'
+            uci -q delete network.$iface.dns
+            for d in $dns; do
+                valid_ipv4 "$d" || { json_error "Invalid DNS server: $d"; return; }
+                uci add_list network.$iface.dns="$d"
+            done
+            ;;
+        *) json_error "Protocol must be static, dhcp, or pppoe."; return ;;
+    esac
+
+    uci commit network
+    ( sleep 1; /etc/init.d/network reload ) >/dev/null 2>&1 &
+    log "$iface protocol changed to $proto"
+    json_ok "$(jstr message "$iface updated to $proto. The network is reloading.")"
+}
+
+# ===========================================================================
+# PORTS
+# ===========================================================================
+api_ports() {
+    printf '{"ok":true,"ports":['
+    local first=1 p
+    for p in $ALL_PORTS; do
+        [ -e "/sys/class/net/$p" ] || continue
+        [ $first -eq 0 ] && printf ','
+        first=0
+        local link role
+        link=$(sh /usr/lib/mwadmin/portdetect.sh link "$p")
+        role=$(sh -c ". /usr/lib/mwadmin/portdetect.sh >/dev/null 2>&1; port_role '$p'" 2>/dev/null)
+        [ -z "$role" ] && role=unassigned
+        # Splice the role into the link object.
+        printf '%s' "$(printf '%s' "$link" | sed "s/}$/,\"role\":\"$role\"}/")"
+    done
+    printf '],"results":{'
+    first=1
+    for i in wan1 wan2 wan3; do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '"%s":%s' "$i" "$(sh /usr/lib/mwadmin/portdetect.sh result "$i")"
+    done
+    printf '}}\n'
+}
+
+# Reassign physical ports to roles. Accepts a full desired layout so the result
+# is always internally consistent — partial reassignment is how you end up with
+# a port in two bridges or an interface with no device.
+api_ports_assign() {
+    local w1 w2 w3 lanports
+    w1=$(bodyval wan1); w2=$(bodyval wan2); w3=$(bodyval wan3); lanports=$(bodyval lan)
+
+    for p in $w1 $w2 $w3 $lanports; do
+        valid_port "$p" || { json_error "Invalid port name: $p"; return; }
+    done
+    [ -z "$lanports" ] && { json_error "At least one LAN port is required, or you will lose access."; return; }
+
+    local dupes
+    dupes=$(for p in $w1 $w2 $w3 $lanports; do echo "$p"; done | sort | uniq -d)
+    [ -n "$dupes" ] && { json_error "Port assigned to more than one role: $dupes"; return; }
+
+    # A WAN slot left blank here, that currently HAS a device assigned, is
+    # being retired back to LAN. Tear its mwan3 member/tracker and firewall
+    # zone membership down completely rather than leaving them pointing at a
+    # port that may now also be bridged into LAN — that combination is a
+    # silent routing conflict (one physical port configured as both a WAN
+    # interface and a LAN bridge member), not just leftover config.
+    local i requested
+    for i in wan1 wan2 wan3; do
+        case "$i" in wan1) requested="$w1" ;; wan2) requested="$w2" ;; wan3) requested="$w3" ;; esac
+        if [ -z "$requested" ] && [ -n "$(uget network.$i.device)" ]; then
+            retire_wan_slot "$i"
+        fi
+    done
+
+    # The mirror image: a WAN slot being assigned a port here that has no
+    # existing network.wanN section (either never configured, or just torn
+    # down by retire_wan_slot above in this very call, or in a previous one)
+    # needs full provisioning — network interface, mwan3 tracker + policy
+    # member, firewall zone membership, DHCP guard — not just a device
+    # assignment on a section that does not exist. Only fresh/retired slots
+    # go through this: a slot that already exists (the normal case — moving
+    # WAN1 from one cable to another) is left exactly as it is apart from
+    # its device, so its proto/static-IP/DNS configuration is never touched.
+    for i in wan1 wan2 wan3; do
+        case "$i" in wan1) requested="$w1" ;; wan2) requested="$w2" ;; wan3) requested="$w3" ;; esac
+        if [ -n "$requested" ] && [ -z "$(uget network.$i)" ]; then
+            provision_wan_slot "$i" "$requested"
+        fi
+    done
+
+    [ -n "$w1" ] && uci set network.wan1.device="$w1"
+    [ -n "$w2" ] && uci set network.wan2.device="$w2"
+    [ -n "$w3" ] && uci set network.wan3.device="$w3"
+
+    uci -q delete network.br_lan.ports
+    for p in $lanports; do uci add_list network.br_lan.ports="$p"; done
+
+    uci commit network
+    uci commit mwan3
+    uci commit firewall
+    uci commit dhcp
+    ( sleep 1; /etc/init.d/network reload; /etc/init.d/mwan3 restart; /etc/init.d/firewall reload ) >/dev/null 2>&1 &
+    log "port roles reassigned: wan1=$w1 wan2=$w2 wan3=$w3 lan='$lanports'"
+    json_ok "$(jstr message 'Port roles updated. The network is reloading.')"
+}
+
+# Fully retires a WAN slot (wan1/wan2/wan3): removes the network interface,
+# its mwan3 tracker and policy member, its firewall zone membership, and its
+# "never DHCP a WAN" dhcp guard. Leaves nothing pointing at the port, so it
+# is genuinely free to become a plain LAN port with nothing left to conflict.
+retire_wan_slot() {
+    local i="$1" msect
+    case "$i" in
+        wan1) msect="wan1_m1" ;;
+        wan2) msect="wan2_m2" ;;
+        wan3) msect="wan3_m3" ;;
+        *) return ;;
+    esac
+
+    uci -q delete network.$i
+    uci -q delete mwan3.$i
+    uci -q delete mwan3.$msect
+
+    # Pull it out of whichever policy lists it as a member.
+    local polsect remaining m
+    polsect=$(uci show mwan3 2>/dev/null | \
+        sed -n "s/^mwan3\.\(@\?[a-z0-9_-]*\(\[[0-9]*\]\)\?\)=policy$/\1/p")
+    for polsect in $polsect; do
+        remaining=$(uci -q get mwan3.$polsect.use_member 2>/dev/null)
+        uci -q delete mwan3.$polsect.use_member
+        for m in $remaining; do
+            [ "$m" = "$msect" ] && continue
+            uci add_list mwan3.$polsect.use_member="$m"
+        done
+    done
+
+    # Pull it out of the firewall's wan zone member list.
+    local wanz fwremain n
+    wanz=$(uci show firewall 2>/dev/null | \
+        sed -n "s/^firewall\.\(@\?[a-z0-9_-]*\(\[[0-9]*\]\)\?\)\.name='wan'$/\1/p" | head -n1)
+    if [ -n "$wanz" ]; then
+        fwremain=$(uci -q get firewall.$wanz.network 2>/dev/null)
+        uci -q delete firewall.$wanz.network
+        for n in $fwremain; do
+            [ "$n" = "$i" ] && continue
+            uci add_list firewall.$wanz.network="$n"
+        done
+    fi
+
+    uci -q delete dhcp.$i
+    log "$i retired: its port returns to the LAN pool with no leftover WAN config"
+}
+
+# The reverse of retire_wan_slot: brings a WAN slot into existence from
+# nothing (a port that was previously LAN-only, or a WAN slot that was
+# retired at some point). Provisions everything retire_wan_slot removes:
+# the network interface, an mwan3 tracker + policy member, firewall zone
+# membership, and the "never DHCP a WAN" guard.
+#
+# New WANs default to DHCP with conservative tracking (the same preset the
+# original install gives WAN2/WAN3) rather than trying to guess a static
+# configuration — this endpoint has no way to know an IP/gateway/DNS for a
+# link it has never seen. If the new link genuinely needs static addressing,
+# that is a WAN & failover page edit after the fact, same as it would be for
+# any other WAN.
+provision_wan_slot() {
+    local i="$1" dev="$2" msect metric
+
+    case "$i" in
+        wan1) msect="wan1_m1"; metric=10 ;;
+        wan2) msect="wan2_m2"; metric=20 ;;
+        wan3) msect="wan3_m3"; metric=30 ;;
+        *) return ;;
+    esac
+
+    uci set network.$i='interface'
+    uci set network.$i.device="$dev"
+    uci set network.$i.proto='dhcp'
+    uci set network.$i.metric="$metric"
+    uci set network.$i.peerdns='0'
+
+    uci set mwan3.$i='interface'
+    uci set mwan3.$i.enabled='1'
+    uci set mwan3.$i.family='ipv4'
+    uci set mwan3.$i.track_method='ping'
+    uci set mwan3.$i.interval='5'
+    uci set mwan3.$i.timeout='3'
+    uci set mwan3.$i.count='1'
+    uci set mwan3.$i.down='3'
+    uci set mwan3.$i.up='3'
+    uci set mwan3.$i.reliability='1'
+    uci set mwan3.$i.initial_state='online'
+    for t in 1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222; do
+        uci add_list mwan3.$i.track_ip="$t"
+    done
+    uci add_list mwan3.$i.flush_conntrack='ifdown'
+    uci add_list mwan3.$i.flush_conntrack='disconnected'
+
+    # Match whichever mode the pool is already running: same metric as the
+    # existing members if balance, next priority tier down if failover.
+    local mode; mode=$(mwan3_mode)
+    uci set mwan3.$msect='member'
+    uci set mwan3.$msect.interface="$i"
+    if [ "$mode" = "balance" ]; then
+        uci set mwan3.$msect.metric='1'
+        uci set mwan3.$msect.weight='1'
+    else
+        case "$i" in
+            wan1) uci set mwan3.$msect.metric='1' ;;
+            wan2) uci set mwan3.$msect.metric='2' ;;
+            wan3) uci set mwan3.$msect.metric='3' ;;
+        esac
+        uci set mwan3.$msect.weight='1'
+    fi
+
+    # Add the new member to every policy that exists (in practice just
+    # prio_failover), rather than assuming its exact name.
+    local polsect
+    for polsect in $(uci show mwan3 2>/dev/null | sed -n "s/^mwan3\.\(@\?[a-z0-9_-]*\(\[[0-9]*\]\)\?\)=policy$/\1/p"); do
+        uci add_list mwan3.$polsect.use_member="$msect"
+    done
+
+    local wanz
+    wanz=$(uci show firewall 2>/dev/null | \
+        sed -n "s/^firewall\.\(@\?[a-z0-9_-]*\(\[[0-9]*\]\)\?\)\.name='wan'$/\1/p" | head -n1)
+    [ -n "$wanz" ] && uci add_list firewall.$wanz.network="$i"
+
+    uci set dhcp.$i='dhcp'
+    uci set dhcp.$i.interface="$i"
+    uci set dhcp.$i.ignore='1'
+
+    log "$i provisioned on $dev: dhcp, mode=$mode, conservative tracking (interval=5s down=3 up=3)"
+}
+
+api_port_test() {
+    local iface; iface=$(bodyval iface)
+    valid_iface "$iface" || { json_error "Invalid interface."; return; }
+    ( setsid /usr/lib/mwadmin/portdetect.sh test "$iface" >/dev/null 2>&1 & ) &
+    json_ok "$(jstr message "Test started on $iface. Poll /api/ports for the result.")"
+}
+
+# ===========================================================================
+# MWAN MODE (priority failover / load balance) + per-WAN enable toggle
+# ===========================================================================
+# See config/30-mwan3.sh for the full design note. The short version: all
+# three mwan3 members always exist, in either failover metrics (1/2/3) or
+# balance metrics (all 1, split by weight). A disabled WAN is skipped by
+# mwan3 regardless of its metric, so these two endpoints only ever flip
+# existing flags/values and restart mwan3 — they never add or remove
+# sections, so live state can never drift from what the install script would
+# produce on a clean run.
+api_mwan_get() {
+    local m1 m2 m3 w1 w2 w3 e1 e2 e3 mode
+    m1=$(uget mwan3.wan1_m1.metric); m2=$(uget mwan3.wan2_m2.metric); m3=$(uget mwan3.wan3_m3.metric)
+    w1=$(uget mwan3.wan1_m1.weight); w2=$(uget mwan3.wan2_m2.weight); w3=$(uget mwan3.wan3_m3.weight)
+    e1=$(uget_d mwan3.wan1.enabled 1); e2=$(uget_d mwan3.wan2.enabled 1); e3=$(uget_d mwan3.wan3.enabled 1)
+
+    mode="failover"
+    [ -n "$m1" ] && [ "$m1" = "$m2" ] && [ "$m1" = "$m3" ] && mode="balance"
+
+    printf '{"ok":true,%s,"wans":[{%s,%s,%s,%s},{%s,%s,%s,%s},{%s,%s,%s,%s}]}\n' \
+        "$(jstr mode "$mode")" \
+        "$(jstr iface wan1)" "$(jbool enabled "$e1")" "$(jnum metric "$m1")" "$(jnum weight "$w1")" \
+        "$(jstr iface wan2)" "$(jbool enabled "$e2")" "$(jnum metric "$m2")" "$(jnum weight "$w2")" \
+        "$(jstr iface wan3)" "$(jbool enabled "$e3")" "$(jnum metric "$m3")" "$(jnum weight "$w3")"
+}
+
+api_mwan_mode_set() {
+    local mode; mode=$(bodyval mode)
+    case "$mode" in
+        failover)
+            uci set mwan3.wan1_m1.metric='1'
+            uci set mwan3.wan2_m2.metric='2'
+            uci set mwan3.wan3_m3.metric='3'
+            ;;
+        balance)
+            uci set mwan3.wan1_m1.metric='1'
+            uci set mwan3.wan2_m2.metric='1'
+            uci set mwan3.wan3_m3.metric='1'
+            # Weights only matter once metrics tie. Seed sensible defaults
+            # (gigabit vs 100 Mb) the first time balance mode is used; leave
+            # them alone if you already customised them.
+            [ -z "$(uget mwan3.wan1_m1.weight)" ] && uci set mwan3.wan1_m1.weight='10'
+            [ -z "$(uget mwan3.wan2_m2.weight)" ] && uci set mwan3.wan2_m2.weight='1'
+            [ -z "$(uget mwan3.wan3_m3.weight)" ] && uci set mwan3.wan3_m3.weight='1'
+            ;;
+        *) json_error "Mode must be 'failover' or 'balance'."; return ;;
+    esac
+    uci commit mwan3
+    /etc/init.d/mwan3 restart >/dev/null 2>&1
+    log "mwan3 mode changed to $mode"
+    json_ok "$(jstr message "Switched to $([ "$mode" = balance ] && echo 'load balancing' || echo 'priority failover').")"
+}
+
+api_mwan_wan_toggle() {
+    local iface enabled
+    iface=$(bodyval iface); enabled=$(bodyval enabled)
+    case "$iface" in wan1|wan2|wan3) ;; *) json_error "Only wan1, wan2, or wan3 can be toggled."; return ;; esac
+
+    # Refuse to leave every WAN disabled. From a one-tap toggle UI this is an
+    # easy accident, and the result is "no internet," not "smaller pool."
+    if [ "$enabled" = "0" ]; then
+        local others_on=0 i
+        for i in wan1 wan2 wan3; do
+            [ "$i" = "$iface" ] && continue
+            [ "$(uget_d mwan3.$i.enabled 1)" = "1" ] && others_on=1
+        done
+        [ "$others_on" = "0" ] && { json_error "At least one WAN must stay enabled."; return; }
+    fi
+
+    uci set mwan3.$iface.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit mwan3
+    /etc/init.d/mwan3 restart >/dev/null 2>&1
+    log "mwan3 $iface enabled=$enabled (via admin UI)"
+    json_ok "$(jstr message "$iface $([ "$enabled" = "1" ] && echo enabled || echo disabled).")"
+}
+
+# ===========================================================================
+# DEVICES — per-device live throughput, for the admin UI's Devices tab.
+# ===========================================================================
+# Byte counting comes from nlbwmon (net/nlbwmon), an existing OpenWrt package
+# that already does conntrack-based per-host accounting with layer-7
+# classification and persistent history — deliberately used here instead of
+# a hand-rolled nftables accounting table, which would have duplicated a
+# well-maintained tool for no benefit.
+#
+# nlbwmon itself only reports CUMULATIVE totals since its last database
+# commit, not a live rate. The Mbps shown here comes from sampling that
+# cumulative counter on every poll and diffing it against the previous
+# sample, persisted in $MW_RUN/devrates.prev between requests — the same
+# delta-over-time approach the dashboard's interface bandwidth graphs
+# already use, just applied per MAC instead of per interface.
+#
+# rx = bytes received BY the local address = download to the device.
+# tx = bytes sent BY the local address = upload from the device. This
+# follows from nlbwmon's local_network setting, which is the LAN.
+
+# One nlbw invocation for the whole request, not one per device — this
+# endpoint gets polled every few seconds. Extracts each
+# ["mac",conns,rx_bytes,rx_pkts,tx_bytes,tx_pkts] row with a plain regex
+# rather than full JSON parsing: the shape is fixed and MACs cannot contain
+# characters that would make that ambiguous.
+nlbw_snapshot() {
+    nlbw -c json -g mac 2>/dev/null | \
+        grep -oE '\["[0-9a-fA-F:]+",[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+\]'
+}
+
+nlbw_bytes_for_mac() {
+    local target line
+    target=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    line=$(printf '%s\n' "$NLBW_RAW" | grep -i "\"$target\"" | head -n1)
+    [ -z "$line" ] && { printf '0 0'; return; }
+    printf '%s' "$line" | sed 's/^\["[^"]*",[0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\),[0-9]*\]$/\1 \2/'
+}
+
+api_devices() {
+    local static_ids; static_ids=$(uci show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([a-z0-9_]*\)=host$/\1/p")
+    NLBW_RAW=$(nlbw_snapshot)
+
+    # Every MAC seen live right now, from either source — this is what
+    # "online" means below, independent of whether a device also happens to
+    # have a reservation.
+    LIVE_MACS=" "
+    local _e _mac _ip _n _i
+    while read -r _e _mac _ip _n _i; do
+        [ -n "$_mac" ] && LIVE_MACS="$LIVE_MACS$(printf '%s' "$_mac" | tr 'A-Z' 'a-z') "
+    done < /tmp/dhcp.leases 2>/dev/null
+    local _flags _dev
+    while read -r _ip _hw _flags _mac _mask _dev; do
+        [ "$_dev" = "br-lan" ] || continue
+        case "$_flags" in 0x0|"") continue ;; esac
+        case "$_mac" in ''|00:00:00:00:00:00) continue ;; esac
+        LIVE_MACS="$LIVE_MACS$(printf '%s' "$_mac" | tr 'A-Z' 'a-z') "
+    done < /proc/net/arp
+
+    NOW=$(date +%s)
+    PREV_FILE="$MW_RUN/devrates.prev"
+    NEW_STATE=""
+    FIRST=1
+    SEEN_MACS=" "
+
+    printf '{"ok":true,"devices":['
+
+    for s in $static_ids; do
+        devices_emit "$(uget dhcp.$s.name)" "$(uget dhcp.$s.mac)" "$(uget dhcp.$s.ip)"
+    done
+
+    local _expiry _mac _ip _name _id
+    while read -r _expiry _mac _ip _name _id; do
+        [ -z "$_mac" ] && continue
+        [ "$_name" = "*" ] && _name=""
+        devices_emit "${_name:-unnamed}" "$_mac" "$_ip"
+    done < /tmp/dhcp.leases 2>/dev/null
+
+    while read -r _ip _hw _flags _mac _mask _dev; do
+        [ "$_dev" = "br-lan" ] || continue
+        case "$_flags" in 0x0|"") continue ;; esac
+        case "$_mac" in ''|00:00:00:00:00:00) continue ;; esac
+        devices_emit "unnamed" "$_mac" "$_ip"
+    done < /proc/net/arp
+
+    printf ']}\n'
+    printf '%s' "$NEW_STATE" > "$PREV_FILE"
+}
+
+# Emits one device row, skipping duplicates by MAC (a device can legitimately
+# appear in both the reservation list and the live lease/ARP data — only the
+# first, most-authoritative sighting wins, which is why reservations are fed
+# in before the live-only passes above).
+devices_emit() {
+    local name="$1" mac="$2" ip="$3"
+    local mac_l; mac_l=$(printf '%s' "$mac" | tr 'A-Z' 'a-z')
+    case "$SEEN_MACS" in *" $mac_l "*) return ;; esac
+    SEEN_MACS="$SEEN_MACS$mac_l "
+
+    local online=0
+    case "$LIVE_MACS" in *" $mac_l "*) online=1 ;; esac
+
+    local down_mbps="null" up_mbps="null"
+    if [ "$online" = "1" ]; then
+        local rx tx
+        set -- $(nlbw_bytes_for_mac "$mac")
+        rx="${1:-0}"; tx="${2:-0}"
+
+        local prev_line
+        prev_line=$(grep -i "^$mac_l " "$PREV_FILE" 2>/dev/null | head -n1)
+        if [ -n "$prev_line" ]; then
+            local _pm prx ptx pt dt
+            set -- $prev_line
+            prx="$2"; ptx="$3"; pt="$4"
+            dt=$((NOW - pt))
+            if [ "$dt" -gt 0 ] && [ "$rx" -ge "$prx" ] && [ "$tx" -ge "$ptx" ]; then
+                down_mbps=$(awk -v a="$rx" -v b="$prx" -v t="$dt" 'BEGIN{printf "%.2f", (a-b)*8/t/1000000}')
+                up_mbps=$(awk -v a="$tx" -v b="$ptx" -v t="$dt" 'BEGIN{printf "%.2f", (a-b)*8/t/1000000}')
+            fi
+        fi
+        NEW_STATE="$NEW_STATE$mac_l $rx $tx $NOW
+"
+    fi
+
+    [ $FIRST -eq 0 ] && printf ','
+    FIRST=0
+    printf '{%s,%s,%s,%s,"down_mbps":%s,"up_mbps":%s}' \
+        "$(jstr name "$name")" "$(jstr mac "$mac")" "$(jstr ip "$ip")" \
+        "$(jbool online "$online")" "$down_mbps" "$up_mbps"
+}
+
+# ===========================================================================
+# BANDWIDTH
+# ===========================================================================
+api_bandwidth() {
+    printf '{"ok":true,"interfaces":['
+    local first=1 i dev
+    for i in wan1 wan2 wan3 lan; do
+        dev=$(uget "network.$i.device")
+        [ -z "$dev" ] && continue
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '%s' "$(sh /usr/lib/mwadmin/portdetect.sh counters "$dev" | \
+                       sed "s/^{/{\"iface\":\"$i\",/")"
+    done
+    printf ']}\n'
+}
+
+# ===========================================================================
+# LAN / DHCP
+# ===========================================================================
+api_lan_get() {
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s}\n' \
+        "$(jstr ipaddr "$(uget network.lan.ipaddr)")" \
+        "$(jstr netmask "$(uget network.lan.netmask)")" \
+        "$(jstr dhcp_start "$(uget dhcp.lan.start)")" \
+        "$(jstr dhcp_limit "$(uget dhcp.lan.limit)")" \
+        "$(jstr dhcp_lease "$(uget dhcp.lan.leasetime)")" \
+        "$(jbool dhcp_enabled "$([ "$(uget dhcp.lan.ignore)" = "1" ] && echo 0 || echo 1)")"
+}
+
+api_lan_set() {
+    local ip mask start limit lease enabled
+    ip=$(bodyval ipaddr); mask=$(bodyval netmask)
+    start=$(bodyval dhcp_start); limit=$(bodyval dhcp_limit)
+    lease=$(bodyval dhcp_lease); enabled=$(bodyval dhcp_enabled)
+
+    valid_ipv4 "$ip"   || { json_error "Invalid LAN IP address."; return; }
+    valid_ipv4 "$mask" || { json_error "Invalid netmask."; return; }
+    valid_int "$start" || { json_error "DHCP start must be a number."; return; }
+    valid_int "$limit" || { json_error "DHCP limit must be a number."; return; }
+    case "$lease" in ''|*[!0-9hmd]*) json_error "Invalid lease time (use e.g. 12h)."; return ;; esac
+
+    uci set network.lan.ipaddr="$ip"
+    uci set network.lan.netmask="$mask"
+    uci set dhcp.lan.start="$start"
+    uci set dhcp.lan.limit="$limit"
+    uci set dhcp.lan.leasetime="$lease"
+    if [ "$enabled" = "0" ]; then uci set dhcp.lan.ignore='1'; else uci -q delete dhcp.lan.ignore; fi
+    uci commit network; uci commit dhcp
+
+    json_ok "$(jstr message "Saved. If the LAN address changed, reconnect at http://$ip:$(uget uhttpd.mwadmin.listen_http | cut -d: -f2)")"
+    ( sleep 2; /etc/init.d/network reload; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+}
+
+api_dhcp_leases() {
+    local static_ids; static_ids=$(uci show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([a-z0-9_]*\)=host$/\1/p")
+
+    # MAC -> reservation name, built once up front.
+    reserved_name_for_mac() {
+        local target; target=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+        local s m
+        for s in $static_ids; do
+            m=$(uget "dhcp.$s.mac" | tr 'A-Z' 'a-z')
+            [ "$m" = "$target" ] && { uget "dhcp.$s.name"; return; }
+        done
+    }
+    is_reserved_mac() { [ -n "$(reserved_name_for_mac "$1")" ]; }
+
+    printf '{"ok":true,"leases":['
+    local first=1 seen_ips=" "
+
+    while read -r expiry mac ip name id; do
+        [ -z "$mac" ] && continue
+        # A device with a static reservation is fully represented in the
+        # "static" list below. Showing it here too — even correctly named —
+        # is still the same device listed twice on one page; the two lists
+        # only stay meaningfully distinct if "leases" means "not yet named."
+        is_reserved_mac "$mac" && continue
+        [ $first -eq 0 ] && printf ','
+        first=0
+        seen_ips="$seen_ips$ip "
+        # "*" is dnsmasq's own placeholder for "this client sent no hostname",
+        # not a real name — treat it the same as genuinely empty.
+        [ "$name" = "*" ] && name=""
+        printf '{%s,%s,%s,%s,%s}' \
+            "$(jnum expires "$expiry")" "$(jstr mac "$mac")" \
+            "$(jstr ip "$ip")" "$(jstr hostname "$name")" \
+            "$(jbool from_lease 1)"
+    done < /tmp/dhcp.leases 2>/dev/null
+
+    # dnsmasq's lease file only covers devices that have DHCP'd since the
+    # last time dnsmasq itself restarted — which during initial setup can be
+    # "never," even though the device has been online for hours. The kernel's
+    # own ARP/neighbour table doesn't have that blind spot: any device that
+    # has exchanged so much as one packet on br-lan shows up here regardless
+    # of DHCP history, so it fills the gap for devices with a long-lived
+    # address the lease file hasn't caught up to yet.
+    #
+    # 0x2 = STALE/REACHABLE (a real, resolved entry). Skips 0x0/incomplete
+    # rows and the bogus all-zero MAC broadcast/multicast noise ARP tables
+    # accumulate.
+    while read -r ip _hw flags mac _mask dev; do
+        [ "$dev" = "Device" ] && continue
+        [ "$dev" = "br-lan" ] || continue
+        case "$flags" in 0x0|"") continue ;; esac
+        case "$mac" in ''|00:00:00:00:00:00) continue ;; esac
+        case "$seen_ips" in *" $ip "*) continue ;; esac
+        is_reserved_mac "$mac" && continue
+        seen_ips="$seen_ips$ip "
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s}' \
+            "$(jnum expires 0)" "$(jstr mac "$mac")" \
+            "$(jstr ip "$ip")" "$(jstr hostname "")" \
+            "$(jbool from_lease 0)"
+    done < /proc/net/arp
+
+    printf '],"static":['
+    first=1
+    for s in $static_ids; do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s}' \
+            "$(jstr id "$s")" "$(jstr name "$(uget dhcp.$s.name)")" \
+            "$(jstr mac "$(uget dhcp.$s.mac)")" "$(jstr ip "$(uget dhcp.$s.ip)")"
+    done
+    printf ']}\n'
+}
+
+api_dhcp_static_add() {
+    local name mac ip
+    name=$(bodyval name); mac=$(bodyval mac); ip=$(bodyval ip)
+    case "$mac" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+        *) json_error "Invalid MAC address (expected aa:bb:cc:dd:ee:ff)."; return ;;
+    esac
+    valid_ipv4 "$ip" || { json_error "Invalid IP address."; return; }
+    case "$name" in *[!a-zA-Z0-9_-]*) json_error "Host name may contain only letters, digits, hyphen and underscore."; return ;; esac
+
+    local sect; sect="host_$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')"
+    uci set dhcp.$sect='host'
+    uci set dhcp.$sect.name="$name"
+    uci set dhcp.$sect.mac="$mac"
+    uci set dhcp.$sect.ip="$ip"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+    json_ok "$(jstr message 'Reservation added.')"
+}
+
+api_dhcp_static_del() {
+    local id; id=$(bodyval id)
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid reservation id."; return ;; esac
+    [ "$(uget dhcp.$id)" = "host" ] || { json_error "No such reservation."; return; }
+    uci -q delete dhcp.$id
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+    json_ok "$(jstr message 'Reservation removed.')"
+}
+
+# ===========================================================================
+# WIRELESS
+# ===========================================================================
+api_wifi_get() {
+    printf '{"ok":true,"radios":['
+    local first=1 r
+    for r in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([a-z0-9]*\)=wifi-device$/\1/p"); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s,%s}' \
+            "$(jstr id "$r")" \
+            "$(jstr band "$(uget_d wireless.$r.band "$(uget wireless.$r.hwmode)")")" \
+            "$(jstr channel "$(uget wireless.$r.channel)")" \
+            "$(jstr htmode "$(uget wireless.$r.htmode)")" \
+            "$(jstr country "$(uget wireless.$r.country)")" \
+            "$(jbool disabled "$(uget_d wireless.$r.disabled 0)")"
+    done
+    printf '],"networks":['
+    first=1
+    for s in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([a-z0-9_]*\)=wifi-iface$/\1/p"); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        # The PSK is deliberately never returned to the browser. The UI shows a
+        # placeholder and only sends a key when the user actually types a new
+        # one, so an XSS or a shoulder-surfed devtools panel cannot harvest it.
+        printf '{%s,%s,%s,%s,%s,%s,%s,%s}' \
+            "$(jstr id "$s")" \
+            "$(jstr device "$(uget wireless.$s.device)")" \
+            "$(jstr ssid "$(uget wireless.$s.ssid)")" \
+            "$(jstr encryption "$(uget wireless.$s.encryption)")" \
+            "$(jstr network "$(uget wireless.$s.network)")" \
+            "$(jbool isolate "$(uget_d wireless.$s.isolate 0)")" \
+            "$(jbool disabled "$(uget_d wireless.$s.disabled 0)")" \
+            "$(jbool hidden "$(uget_d wireless.$s.hidden 0)")"
+    done
+    printf '],"clients":['
+    first=1
+    for iface in $(iwinfo 2>/dev/null | sed -n 's/^\([a-z0-9-]*\)[[:space:]]*ESSID.*/\1/p'); do
+        iwinfo "$iface" assoclist 2>/dev/null | \
+        sed -n 's/^\([0-9A-F:]\{17\}\).*[^0-9-]\(-[0-9]\{1,3\}\) dBm.*/\1 \2/p' | \
+        while read -r mac sig; do
+            [ $first -eq 0 ] && printf ','
+            first=0
+            printf '{%s,%s,%s}' "$(jstr mac "$mac")" "$(jnum signal_dbm "$sig")" "$(jstr iface "$iface")"
+        done
+    done
+    printf ']}\n'
+}
+
+api_wifi_set() {
+    local id ssid key enc disabled isolate hidden
+    id=$(bodyval id); ssid=$(bodyval ssid); key=$(bodyval key)
+    enc=$(bodyval encryption); disabled=$(bodyval disabled); isolate=$(bodyval isolate)
+    hidden=$(bodyval hidden)
+
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid network id."; return ;; esac
+    [ "$(uget wireless.$id)" = "wifi-iface" ] || { json_error "No such wireless network."; return; }
+
+    if [ -n "$ssid" ]; then
+        [ ${#ssid} -gt 32 ] && { json_error "SSID may be at most 32 characters."; return; }
+        uci set wireless.$id.ssid="$ssid"
+    fi
+
+    if [ -n "$key" ]; then
+        [ ${#key} -lt 8 ] && { json_error "Password must be at least 8 characters."; return; }
+        [ ${#key} -gt 63 ] && { json_error "Password may be at most 63 characters."; return; }
+        uci set wireless.$id.key="$key"
+    fi
+
+    if [ -n "$enc" ]; then
+        case "$enc" in
+            psk2|psk-mixed|sae|sae-mixed|none) uci set wireless.$id.encryption="$enc" ;;
+            *) json_error "Unsupported security type."; return ;;
+        esac
+        case "$enc" in
+            sae|sae-mixed)
+                if ! (opkg list-installed 2>/dev/null || apk info 2>/dev/null) | grep -qE 'wpad-(mbedtls|openssl|wolfssl)'; then
+                    json_error "WPA3 requires a full wpad build. Install wpad-mbedtls (replacing wpad-basic-mbedtls) first."
+                    return
+                fi
+                ;;
+        esac
+    fi
+
+    [ -n "$disabled" ] && uci set wireless.$id.disabled="$([ "$disabled" = "1" ] && echo 1 || echo 0)"
+    [ -n "$isolate" ]  && uci set wireless.$id.isolate="$([ "$isolate" = "1" ] && echo 1 || echo 0)"
+    # Hidden suppresses the SSID from beacon frames. It is obscurity, not
+    # security — the name still goes out in plain text whenever a real client
+    # connects — but it does what most people mean by "hide my WiFi."
+    [ -n "$hidden" ]   && uci set wireless.$id.hidden="$([ "$hidden" = "1" ] && echo 1 || echo 0)"
+
+    uci commit wireless
+    ( sleep 1; wifi reload ) >/dev/null 2>&1 &
+    json_ok "$(jstr message 'Wireless settings saved. Radios are reloading.')"
+}
+
+api_wifi_radio_set() {
+    local id channel htmode country disabled
+    id=$(bodyval id); channel=$(bodyval channel); htmode=$(bodyval htmode)
+    country=$(bodyval country); disabled=$(bodyval disabled)
+
+    case "$id" in ''|*[!a-z0-9]*) json_error "Invalid radio id."; return ;; esac
+    [ "$(uget wireless.$id)" = "wifi-device" ] || { json_error "No such radio."; return; }
+
+    if [ -n "$channel" ]; then
+        case "$channel" in auto|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]) uci set wireless.$id.channel="$channel" ;;
+            *) json_error "Invalid channel."; return ;; esac
+    fi
+    if [ -n "$htmode" ]; then
+        case "$htmode" in HT20|HT40|VHT20|VHT40|VHT80|VHT160) uci set wireless.$id.htmode="$htmode" ;;
+            *) json_error "Invalid channel width."; return ;; esac
+    fi
+    if [ -n "$country" ]; then
+        case "$country" in [A-Z][A-Z]) uci set wireless.$id.country="$country" ;;
+            *) json_error "Country must be a two-letter code."; return ;; esac
+    fi
+    [ -n "$disabled" ] && uci set wireless.$id.disabled="$([ "$disabled" = "1" ] && echo 1 || echo 0)"
+
+    uci commit wireless
+    ( sleep 1; wifi reload ) >/dev/null 2>&1 &
+    json_ok "$(jstr message 'Radio settings saved.')"
+}
+
+# ===========================================================================
+# FIREWALL
+# ===========================================================================
+api_fw_get() {
+    printf '{"ok":true,"forwards":['
+    local first=1 s
+    for s in $(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([a-z0-9_]*\)=redirect$/\1/p"); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s,%s,%s}' \
+            "$(jstr id "$s")" "$(jstr name "$(uget firewall.$s.name)")" \
+            "$(jstr proto "$(uget firewall.$s.proto)")" \
+            "$(jstr src_dport "$(uget firewall.$s.src_dport)")" \
+            "$(jstr dest_ip "$(uget firewall.$s.dest_ip)")" \
+            "$(jstr dest_port "$(uget firewall.$s.dest_port)")" \
+            "$(jbool enabled "$(uget_d firewall.$s.enabled 1)")"
+    done
+    printf '],'
+    printf '%s,' "$(jbool upnp_enabled "$([ -f /etc/init.d/miniupnpd ] && /etc/init.d/miniupnpd enabled && echo 1 || echo 0)")"
+    printf '%s,' "$(jstr dmz_host "$(uget firewall.dmz_host.dest_ip)")"
+    printf '%s,' "$(jbool sw_offload "$(uget_d firewall.@defaults[0].flow_offloading 0)")"
+    printf '%s,' "$(jbool hw_offload "$(uget_d firewall.@defaults[0].flow_offloading_hw 0)")"
+    printf '%s'  "$(jbool remote_admin "$([ "$(uget firewall.admin_ui_wan.enabled)" = "1" ] && echo 1 || echo 0)")"
+    printf '}\n'
+}
+
+api_fw_forward_add() {
+    local name proto sport dip dport
+    name=$(bodyval name); proto=$(bodyval proto)
+    sport=$(bodyval src_dport); dip=$(bodyval dest_ip); dport=$(bodyval dest_port)
+
+    # No spaces: an unquoted space inside a case bracket expression is a parse
+    # error in ash and bash alike, and a UCI section name cannot contain one anyway.
+    case "$name" in ''|*[!a-zA-Z0-9_-]*) json_error "Rule name may contain only letters, digits, hyphen and underscore."; return ;; esac
+    case "$proto" in tcp|udp|"tcp udp") ;; *) json_error "Protocol must be tcp, udp, or 'tcp udp'."; return ;; esac
+    valid_int "$sport" || { json_error "Invalid external port."; return; }
+    valid_int "$dport" || { json_error "Invalid internal port."; return; }
+    [ "$sport" -gt 65535 ] && { json_error "External port out of range."; return; }
+    [ "$dport" -gt 65535 ] && { json_error "Internal port out of range."; return; }
+    valid_ipv4 "$dip" || { json_error "Invalid destination IP."; return; }
+
+    local sect="pf_${sport}_${proto%% *}"
+    uci set firewall.$sect='redirect'
+    uci set firewall.$sect.target='DNAT'
+    uci set firewall.$sect.src='wan'
+    uci set firewall.$sect.dest='lan'
+    uci set firewall.$sect.name="$name"
+    uci set firewall.$sect.proto="$proto"
+    uci set firewall.$sect.src_dport="$sport"
+    uci set firewall.$sect.dest_ip="$dip"
+    uci set firewall.$sect.dest_port="$dport"
+    uci commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    log "port forward added: $proto $sport -> $dip:$dport"
+    json_ok "$(jstr message 'Port forward added.')"
+}
+
+api_fw_forward_del() {
+    local id; id=$(bodyval id)
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid rule id."; return ;; esac
+    [ "$(uget firewall.$id)" = "redirect" ] || { json_error "No such port forward."; return; }
+    uci -q delete firewall.$id
+    uci commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    json_ok "$(jstr message 'Port forward removed.')"
+}
+
+api_fw_settings() {
+    local dmz upnp remote
+    dmz=$(bodyval dmz_host); upnp=$(bodyval upnp_enabled); remote=$(bodyval remote_admin)
+
+    if [ -n "$dmz" ]; then
+        if [ "$dmz" = "none" ] || [ "$dmz" = "" ]; then
+            uci -q delete firewall.dmz_host
+        else
+            valid_ipv4 "$dmz" || { json_error "Invalid DMZ host address."; return; }
+            uci set firewall.dmz_host='redirect'
+            uci set firewall.dmz_host.target='DNAT'
+            uci set firewall.dmz_host.src='wan'
+            uci set firewall.dmz_host.dest='lan'
+            uci set firewall.dmz_host.name='DMZ'
+            uci set firewall.dmz_host.dest_ip="$dmz"
+            log "DMZ host set to $dmz — this host is now fully exposed to all three WANs"
+        fi
+    fi
+
+    if [ -n "$upnp" ]; then
+        if [ "$upnp" = "1" ]; then
+            /etc/init.d/miniupnpd enable >/dev/null 2>&1 && /etc/init.d/miniupnpd start >/dev/null 2>&1
+        else
+            /etc/init.d/miniupnpd stop >/dev/null 2>&1; /etc/init.d/miniupnpd disable >/dev/null 2>&1
+        fi
+    fi
+
+    # Remote admin access. The UI is required to have shown its warning before
+    # sending this; the log line exists so that enabling it is always traceable
+    # afterwards even if the UI is bypassed.
+    if [ -n "$remote" ]; then
+        if [ "$remote" = "1" ]; then
+            uci set firewall.admin_ui_wan.enabled='1'
+            log "WARNING: admin UI exposed to WAN by user request"
+        else
+            uci set firewall.admin_ui_wan.enabled='0'
+            log "admin UI WAN exposure disabled"
+        fi
+    fi
+
+    uci commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    json_ok "$(jstr message 'Firewall settings saved.')"
+}
+
+# ===========================================================================
+# DNS / DDNS / QOS / WIREGUARD
+# ===========================================================================
+api_dns_get() {
+    printf '{"ok":true,"servers":['
+    local first=1 s
+    for s in $(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '"%s"' "$(json_escape "$s")"
+    done
+    printf '],%s}\n' "$(jbool ignore_isp_dns "$(uget_d dhcp.@dnsmasq[0].noresolv 0)")"
+}
+
+api_dns_set() {
+    local servers ignore
+    servers=$(bodyval servers); ignore=$(bodyval ignore_isp_dns)
+    uci -q delete dhcp.@dnsmasq[0].server
+    local n=0
+    for s in $servers; do
+        valid_ipv4 "$s" || { json_error "Invalid DNS server: $s"; return; }
+        uci add_list dhcp.@dnsmasq[0].server="$s"
+        n=$((n + 1))
+    done
+    [ $n -eq 0 ] && { json_error "At least one DNS server is required."; return; }
+    uci set dhcp.@dnsmasq[0].noresolv="$([ "$ignore" = "0" ] && echo 0 || echo 1)"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+    json_ok "$(jstr message 'DNS settings saved.')"
+}
+
+api_ddns_get() {
+    printf '{"ok":true,"services":['
+    local first=1 s
+    for s in $(uci show ddns 2>/dev/null | sed -n "s/^ddns\.\([a-z0-9_]*\)=service$/\1/p"); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s}' \
+            "$(jstr id "$s")" "$(jstr provider "$(uget ddns.$s.service_name)")" \
+            "$(jstr domain "$(uget ddns.$s.domain)")" \
+            "$(jstr username "$(uget ddns.$s.username)")" \
+            "$(jbool enabled "$(uget_d ddns.$s.enabled 0)")"
+    done
+    printf ']}\n'
+}
+
+api_ddns_set() {
+    local provider domain username password enabled iface
+    provider=$(bodyval provider); domain=$(bodyval domain)
+    username=$(bodyval username); password=$(bodyval password)
+    enabled=$(bodyval enabled); iface=$(bodyval interface)
+
+    [ -f /etc/config/ddns ] || { json_error "ddns-scripts is not installed."; return; }
+    case "$provider" in ''|*[!a-zA-Z0-9._-]*) json_error "Invalid provider name."; return ;; esac
+    valid_host "$domain" || { json_error "Invalid domain name."; return; }
+    valid_iface "${iface:-wan1}" || { json_error "Invalid interface."; return; }
+
+    uci set ddns.mwddns='service'
+    uci set ddns.mwddns.service_name="$provider"
+    uci set ddns.mwddns.domain="$domain"
+    uci set ddns.mwddns.username="$username"
+    [ -n "$password" ] && uci set ddns.mwddns.password="$password"
+    uci set ddns.mwddns.interface="${iface:-wan1}"
+    uci set ddns.mwddns.ip_source='web'
+    uci set ddns.mwddns.ip_url='http://checkip.amazonaws.com'
+    uci set ddns.mwddns.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit ddns
+    /etc/init.d/ddns restart >/dev/null 2>&1
+    json_ok "$(jstr message 'DDNS configuration saved.')"
+}
+
+api_qos_get() {
+    printf '{"ok":true,"queues":['
+    local first=1 s
+    for s in $(uci show sqm 2>/dev/null | sed -n "s/^sqm\.\([a-z0-9_]*\)=queue$/\1/p"); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s}' \
+            "$(jstr id "$s")" "$(jstr interface "$(uget sqm.$s.interface)")" \
+            "$(jnum download "$(uget sqm.$s.download)")" \
+            "$(jnum upload "$(uget sqm.$s.upload)")" \
+            "$(jbool enabled "$(uget_d sqm.$s.enabled 0)")"
+    done
+    printf '],%s}\n' "$(jstr note 'SQM on this CPU saturates near 100-200 Mbps. Recommended on WAN2/WAN3 only; enabling it on WAN1 will cost you throughput.')"
+}
+
+api_qos_set() {
+    local iface down up enabled
+    iface=$(bodyval interface); down=$(bodyval download); up=$(bodyval upload); enabled=$(bodyval enabled)
+
+    [ -f /etc/config/sqm ] || { json_error "sqm-scripts is not installed."; return; }
+    valid_iface "$iface" || { json_error "Invalid interface."; return; }
+    valid_int "$down" || { json_error "Download limit must be a number (kbit/s)."; return; }
+    valid_int "$up"   || { json_error "Upload limit must be a number (kbit/s)."; return; }
+
+    local dev; dev=$(uget "network.$iface.device")
+    [ -z "$dev" ] && { json_error "Interface has no device."; return; }
+
+    local sect="sqm_$iface"
+    uci set sqm.$sect='queue'
+    uci set sqm.$sect.interface="$dev"
+    uci set sqm.$sect.download="$down"
+    uci set sqm.$sect.upload="$up"
+    uci set sqm.$sect.qdisc='cake'
+    uci set sqm.$sect.script='piece_of_cake.qos'
+    uci set sqm.$sect.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit sqm
+    /etc/init.d/sqm restart >/dev/null 2>&1
+
+    local warn=""
+    [ "$iface" = "wan1" ] && [ "$enabled" = "1" ] && \
+        warn=" Warning: SQM is now active on WAN1. Expect routed throughput to drop to roughly 100-200 Mbps."
+    json_ok "$(jstr message "QoS saved.$warn")"
+}
+
+# ===========================================================================
+# FAILOVER TEST — proves the fallback actually works, not just that it's
+# configured. Cuts WAN1's tracking pings (not the interface itself, so this
+# exercises the exact same detection path a real outage would), times how
+# long mwan3 takes to move traffic off it, then restores it and times the
+# failback.
+#
+# SAFETY: this blocks internet on WAN1 for the ~15-20s the test takes. The
+# unblock is UNCONDITIONAL — it runs right after the failover-detection loop
+# regardless of whether failover was even detected, so a WAN2 that turns out
+# not to be reachable degrades the test to "no failover recorded," never to
+# "WAN1 stays blocked." The whole thing also runs under `trap ... EXIT` as a
+# second, independent guarantee, and a hard 45s ceiling. A previous manual
+# version of this test (run ad hoc over SSH during development, not through
+# this endpoint) got killed by an external timeout mid-test and left its
+# block rule in place — this endpoint exists specifically so that can't
+# happen to a real user.
+# ===========================================================================
+api_failover_test_start() {
+    if ! lock_acquire "failovertest"; then
+        json_error "A failover test is already running."
+        return
+    fi
+
+    local out="$MW_RUN/failover_test.json"
+    write_ft() { printf '%s\n' "$1" > "$out"; }
+
+    if [ "$(uget_d mwan3.wan1.enabled 1)" != "1" ]; then
+        lock_release "failovertest"
+        json_error "WAN1 is turned off, so there is nothing to fail over from."
+        return
+    fi
+    if [ "$(cat /sys/class/net/wan/carrier 2>/dev/null)" != "1" ]; then
+        lock_release "failovertest"
+        json_error "WAN1 has no cable plugged in."
+        return
+    fi
+
+    write_ft '{"status":"running","phase":"starting"}'
+
+    (
+        trap 'nft delete table inet mwfailtest >/dev/null 2>&1; lock_release failovertest' EXIT INT TERM
+
+        active_wan() {
+            mwan3 status 2>/dev/null | awk '
+                /Current ipv4 policies/ { inpol = 1; next }
+                inpol && /^[a-zA-Z_]+:/  { next }
+                inpol && /\(/            { gsub(/^[ \t]+/, ""); print $1; exit }
+            '
+        }
+
+        write_ft '{"status":"running","phase":"blocking_wan1"}'
+        nft add table inet mwfailtest 2>/dev/null
+        nft add chain inet mwfailtest out '{ type filter hook output priority -1 ; policy accept ; }' 2>/dev/null
+        nft add rule inet mwfailtest out oifname "wan" ip protocol icmp drop 2>/dev/null
+
+        t0=$(date +%s)
+        failover_s="" new_active=""
+        i=0
+        while [ $i -lt 20 ]; do
+            a=$(active_wan)
+            if [ -n "$a" ] && [ "$a" != "wan1" ]; then
+                failover_s=$(( $(date +%s) - t0 ))
+                new_active="$a"
+                break
+            fi
+            write_ft "{\"status\":\"running\",\"phase\":\"waiting_for_failover\",\"elapsed_s\":$(( $(date +%s) - t0 ))}"
+            sleep 1
+            i=$((i + 1))
+        done
+
+        if [ -n "$failover_s" ]; then
+            write_ft "{\"status\":\"running\",\"phase\":\"failed_over\",\"failover_seconds\":$failover_s,\"new_active\":\"$new_active\"}"
+        else
+            write_ft '{"status":"running","phase":"failover_timed_out"}'
+        fi
+
+        # Unconditional: runs whether or not failover was detected above.
+        nft delete table inet mwfailtest >/dev/null 2>&1
+
+        t1=$(date +%s)
+        failback_s=""
+        i=0
+        while [ $i -lt 20 ]; do
+            a=$(active_wan)
+            if [ "$a" = "wan1" ]; then
+                failback_s=$(( $(date +%s) - t1 ))
+                break
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+
+        printf '{"status":"complete",%s,%s,%s,%s}\n' \
+            "$(jnum failover_seconds "${failover_s:-}")" \
+            "$(jstr new_active_during_test "${new_active:-}")" \
+            "$(jnum failback_seconds "${failback_s:-}")" \
+            "$(jnum tested_at "$(date +%s)")" > "$out"
+
+        log "failover test complete: failover=${failover_s:-timeout}s failback=${failback_s:-timeout}s"
+    ) >/tmp/mwadmin/failover_test.log 2>&1 &
+
+    json_ok "$(jstr message 'Failover test started. WAN1 will be briefly cut and restored — this takes about 15-20 seconds.')"
+}
+
+api_failover_test_result() {
+    if [ -f "$MW_RUN/failover_test.json" ]; then
+        cat "$MW_RUN/failover_test.json"
+    else
+        printf '{"status":"never_run"}\n'
+    fi
+}
+
+api_wg_get() {
+    local present=0
+    command -v wg >/dev/null 2>&1 && present=1
+    printf '{"ok":true,%s,"peers":[' "$(jbool installed "$present")"
+    if [ "$present" = "1" ]; then
+        local first=1 s
+        for s in $(uci show network 2>/dev/null | sed -n "s/^network\.\([a-z0-9_]*\)=wireguard_.*$/\1/p"); do
+            [ $first -eq 0 ] && printf ','
+            first=0
+            printf '{%s,%s,%s}' \
+                "$(jstr id "$s")" \
+                "$(jstr description "$(uget network.$s.description)")" \
+                "$(jstr endpoint "$(uget network.$s.endpoint_host)")"
+        done
+    fi
+    printf '],%s,%s}\n' \
+        "$(jstr iface "$(uci show network 2>/dev/null | sed -n "s/^network\.\([a-z0-9_]*\)\.proto='wireguard'$/\1/p" | head -n1)")" \
+        "$(jstr note 'WireGuard on this router is CPU-bound at roughly 82-99 Mbps. Routing all traffic through a tunnel will cap your throughput at about that.')"
+}
+
+api_wg_keygen() {
+    command -v wg >/dev/null 2>&1 || { json_error "wireguard-tools is not installed."; return; }
+    local priv pub
+    priv=$(wg genkey); pub=$(printf '%s' "$priv" | wg pubkey)
+    json_ok "$(printf '%s,%s' "$(jstr private_key "$priv")" "$(jstr public_key "$pub")")"
+}
+
+# ===========================================================================
+# DIAGNOSTICS
+# ===========================================================================
+api_diag_ping() {
+    local host iface dev
+    host=$(bodyval host); iface=$(bodyval iface)
+    valid_host "$host" || { json_error "Invalid host. Use a hostname or IP address."; return; }
+
+    local bindarg=""
+    if [ -n "$iface" ] && [ "$iface" != "auto" ]; then
+        valid_iface "$iface" || { json_error "Invalid interface."; return; }
+        dev=$(uget "network.$iface.device")
+        [ -n "$dev" ] && bindarg="-I $dev"
+    fi
+
+    # host is allowlist-validated above, so this interpolation cannot inject.
+    local out
+    # shellcheck disable=SC2086
+    out=$(ping $bindarg -c 5 -W 2 "$host" 2>&1 | head -c 4096)
+    json_ok "$(jstr output "$out")"
+}
+
+api_diag_traceroute() {
+    local host; host=$(bodyval host)
+    valid_host "$host" || { json_error "Invalid host."; return; }
+    command -v traceroute >/dev/null 2>&1 || { json_error "traceroute is not installed (opkg install traceroute)."; return; }
+    local out; out=$(traceroute -m 15 -w 2 "$host" 2>&1 | head -c 8192)
+    json_ok "$(jstr output "$out")"
+}
+
+api_syslog() {
+    local n; n=$(qsval lines); valid_int "$n" || n=200
+    [ "$n" -gt 1000 ] && n=1000
+    local out; out=$(logread -l "$n" 2>/dev/null | tail -n "$n")
+    json_ok "$(jstr log "$out")"
+}
+
+# ===========================================================================
+# SYSTEM
+# ===========================================================================
+api_system_get() {
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s}\n' \
+        "$(jstr hostname "$(uget system.@system[0].hostname)")" \
+        "$(jstr timezone "$(uget system.@system[0].zonename)")" \
+        "$(jstr model "$(cat /tmp/sysinfo/model 2>/dev/null)")" \
+        "$(jstr board "$(cat /tmp/sysinfo/board_name 2>/dev/null)")" \
+        "$(jstr firmware "$(. /etc/openwrt_release; echo "$DISTRIB_DESCRIPTION")")" \
+        "$(jstr flash_free "$(df -h /overlay 2>/dev/null | awk 'NR==2{print $4}')")" \
+        "$(jnum uptime_s "$(awk '{printf "%d", $1}' /proc/uptime)")"
+}
+
+api_system_set() {
+    local hostname timezone
+    hostname=$(bodyval hostname); timezone=$(bodyval timezone)
+    if [ -n "$hostname" ]; then
+        valid_host "$hostname" || { json_error "Invalid hostname."; return; }
+        uci set system.@system[0].hostname="$hostname"
+    fi
+    if [ -n "$timezone" ]; then
+        case "$timezone" in *[!a-zA-Z0-9/_+-]*) json_error "Invalid timezone."; return ;; esac
+        uci set system.@system[0].zonename="$timezone"
+    fi
+    uci commit system
+    /etc/init.d/system reload >/dev/null 2>&1
+    json_ok "$(jstr message 'System settings saved.')"
+}
+
+api_password_set() {
+    local old new
+    old=$(bodyval old_password); new=$(bodyval new_password)
+    [ ${#new} -lt 8 ] && { json_error "New password must be at least 8 characters."; return; }
+
+    # Re-verify the current password rather than trusting the session alone.
+    # A live session left open on an unattended machine should not be enough to
+    # change the credential that protects everything else.
+    local check
+    check=$(ubus -S call session login "{\"username\":\"root\",\"password\":\"$(json_escape "$old")\",\"timeout\":5}" 2>/dev/null)
+    printf '%s' "$check" | grep -q 'ubus_rpc_session' || {
+        sleep 1; json_error "Current password is incorrect."; return; }
+
+    printf '%s\n%s\n' "$new" "$new" | passwd root >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log "root password changed via admin UI"
+        json_ok "$(jstr message 'Password changed. Existing sessions remain valid until they expire.')"
+    else
+        json_error "Failed to change the password."
+    fi
+}
+
+api_reboot() {
+    log "reboot requested via admin UI"
+    json_ok "$(jstr message 'Rebooting now. The router will be back in about 60 seconds.')"
+    ( sleep 2; reboot ) >/dev/null 2>&1 &
+}
+
+# Config backup. Streams a real tarball, so this endpoint deliberately writes
+# its own headers instead of JSON.
+api_backup() {
+    local f="/tmp/mwadmin-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    sysupgrade -b "$f" >/dev/null 2>&1
+    if [ ! -f "$f" ]; then
+        printf 'Status: 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n'
+        json_error "Backup failed."
+        return
+    fi
+    printf 'Status: 200 OK\r\n'
+    printf 'Content-Type: application/octet-stream\r\n'
+    printf 'Content-Disposition: attachment; filename="%s"\r\n' "$(basename "$f")"
+    printf 'Content-Length: %s\r\n\r\n' "$(wc -c < "$f")"
+    cat "$f"
+    rm -f "$f"
+}
+
+# ===========================================================================
+# DISPATCH
+# ===========================================================================
+api_dispatch() {
+    local route="$1" method="$2"
+
+    case "$route:$method" in
+        /status:GET)              api_status ;;
+        /ports:GET)               api_ports ;;
+        /ports/assign:POST)       api_ports_assign ;;
+        /ports/test:POST)         api_port_test ;;
+        /bandwidth:GET)           api_bandwidth ;;
+        /devices:GET)             api_devices ;;
+
+        /mwan:GET)                api_mwan_get ;;
+        /mwan/mode:POST)          api_mwan_mode_set ;;
+        /mwan/wan/toggle:POST)    api_mwan_wan_toggle ;;
+
+        /wan:GET)                 api_wan_get ;;
+        /wan:POST)                api_wan_set ;;
+
+        /lan:GET)                 api_lan_get ;;
+        /lan:POST)                api_lan_set ;;
+        /dhcp/leases:GET)         api_dhcp_leases ;;
+        /dhcp/static/add:POST)    api_dhcp_static_add ;;
+        /dhcp/static/del:POST)    api_dhcp_static_del ;;
+
+        /wifi:GET)                api_wifi_get ;;
+        /wifi:POST)               api_wifi_set ;;
+        /wifi/radio:POST)         api_wifi_radio_set ;;
+
+        /firewall:GET)            api_fw_get ;;
+        /firewall/forward/add:POST) api_fw_forward_add ;;
+        /firewall/forward/del:POST) api_fw_forward_del ;;
+        /firewall/settings:POST)  api_fw_settings ;;
+
+        /dns:GET)                 api_dns_get ;;
+        /dns:POST)                api_dns_set ;;
+        /ddns:GET)                api_ddns_get ;;
+        /ddns:POST)               api_ddns_set ;;
+        /qos:GET)                 api_qos_get ;;
+        /qos:POST)                api_qos_set ;;
+        /wireguard:GET)           api_wg_get ;;
+        /wireguard/keygen:POST)   api_wg_keygen ;;
+
+        /diag/ping:POST)          api_diag_ping ;;
+        /diag/traceroute:POST)    api_diag_traceroute ;;
+        /syslog:GET)              api_syslog ;;
+
+        /system:GET)              api_system_get ;;
+        /system:POST)             api_system_set ;;
+        /system/password:POST)    api_password_set ;;
+        /system/reboot:POST)      api_reboot ;;
+        /system/backup:GET)       api_backup ;;
+
+        /mode:GET)                printf '{"ok":true,"mode":%s}\n' "$(sh /usr/lib/mwadmin/modeswitch.sh mode)" ;;
+        /mode/ap:POST)            sh /usr/lib/mwadmin/modeswitch.sh to-ap "$(bodyval bridge_all)" "$(bodyval proto)" "$(bodyval ipaddr)" "$(bodyval netmask)" "$(bodyval gateway)" ;;
+        /mode/router:POST)        sh /usr/lib/mwadmin/modeswitch.sh to-router ;;
+        /mode/confirm:POST)       sh /usr/lib/mwadmin/modeswitch.sh confirm ;;
+
+        *) json_error "No such endpoint: $method $route" ;;
+    esac
+}

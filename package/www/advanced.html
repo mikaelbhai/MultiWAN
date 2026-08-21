@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>MultiWAN</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a84ff'/><path d='M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z' fill='white'/></svg>">
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="login" class="login-shell">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-brand">
+      <svg viewBox="0 0 32 32" class="brand-mark"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <div>
+        <h1>MultiWAN</h1>
+        <p>Gateway administration</p>
+      </div>
+    </div>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" id="login-pass" autocomplete="current-password" required autofocus>
+    </label>
+    <p class="hint">Use the router's <code>root</code> password.</p>
+    <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+    <div class="alert alert-error" id="login-error" hidden></div>
+  </form>
+  <p class="login-foot">LAN access only &middot; TP-Link Archer C6 v3 &middot; OpenWrt</p>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app" hidden>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <svg viewBox="0 0 32 32" class="brand-mark sm"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <span class="topbar-title">MultiWAN</span>
+      <!-- Persistent mode indicator, per the requirement that current mode is
+           unmistakable at all times. -->
+      <span class="mode-badge" id="mode-badge">&mdash;</span>
+    </div>
+    <div class="topbar-right">
+      <span class="active-wan" id="active-wan-chip">
+        <span class="dot"></span><span id="active-wan-label">&mdash;</span>
+      </span>
+      <a class="btn btn-ghost btn-sm" href="index.html">Easy setup</a>
+      <button class="btn btn-ghost btn-sm" id="theme-toggle" title="Toggle theme">◐</button>
+      <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <!-- Rollback countdown. Hidden unless a mode switch is awaiting confirmation. -->
+  <div class="rollback-bar" id="rollback-bar" hidden>
+    <strong>Confirm this mode change.</strong>
+    <span>Reverting to <b id="rb-target"></b> in <b id="rb-seconds"></b>s unless you confirm you still have access.</span>
+    <button class="btn btn-warn btn-sm" id="rb-confirm">Keep this configuration</button>
+  </div>
+
+  <div class="layout">
+    <nav class="sidebar" id="sidebar">
+      <div class="nav-group">
+        <span class="nav-label">Overview</span>
+        <a href="#/dashboard" data-nav>Dashboard</a>
+        <a href="#/wan" data-nav>WAN &amp; failover</a>
+        <a href="#/ports" data-nav>Ports</a>
+        <a href="#/devices" data-nav>Devices</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Network</span>
+        <a href="#/lan" data-nav>LAN &amp; DHCP</a>
+        <a href="#/wifi" data-nav>Wi-Fi</a>
+        <a href="#/dns" data-nav>DNS</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Security</span>
+        <a href="#/firewall" data-nav>Firewall</a>
+        <a href="#/vpn" data-nav>WireGuard</a>
+        <a href="#/qos" data-nav>QoS</a>
+        <a href="#/ddns" data-nav>Dynamic DNS</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">System</span>
+        <a href="#/diagnostics" data-nav>Diagnostics</a>
+        <a href="#/mode" data-nav>Operating mode</a>
+        <a href="#/system" data-nav>System</a>
+      </div>
+    </nav>
+
+    <main class="content" id="view"></main>
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<!-- Confirmation modal, used for every destructive or lockout-capable action. -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-danger" id="modal-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

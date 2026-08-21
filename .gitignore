@@ -1,0 +1,27 @@
+# Real site configuration — contains your actual WiFi password, static IP,
+# and other live secrets. config/mwan.env.example is the template that ships
+# instead; copy it to mwan.env locally and fill in your own values.
+config/mwan.env
+
+# Full router config backups — contain the root password hash, dropbear
+# private host keys, WiFi PSK, and every camera reservation in plaintext.
+backups/
+backup.json
+
+# Hardware-specific MTD partition dumps (radio calibration, MAC-derived
+# config) from this one physical unit. Not portable to any other router,
+# not useful to anyone else, and not something to publish.
+stock-backup/
+DO-NOT-FLASH/
+
+# Vendor firmware images, GPL source drops, and vendor PDFs — large,
+# redistributable-but-not-ours-to-publish, and not part of this project.
+*.bin
+*.zip
+*.tar.gz
+*.pdf
+Archer C6*/
+GPL_*/
+
+# Local scratch
+*.log
