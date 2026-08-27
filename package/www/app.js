@@ -3,7 +3,11 @@
 (function () {
 'use strict';
 
-var API = 'cgi-bin/mwadmin';
+// Sourcing this file from another origin — see docs/07-standalone-app.md —
+// sets window.MW_API_BASE to the router's full external URL before this
+// script loads (e.g. "http://203.0.113.5:8443/cgi-bin/mwadmin"); running on
+// the router itself, the relative path is correct as-is.
+var API = window.MW_API_BASE || 'cgi-bin/mwadmin';
 var session = null;
 var statusTimer = null, bwTimer = null, devTimer = null, nodeTimer = null, remoteTimer = null;
 var bwHistory = {};
@@ -32,13 +36,24 @@ function api(path, opts) {
     // at all, so a header-based token is silently dropped on every request —
     // not an edge case, every single one. The body is read directly off
     // stdin server-side and is how the login password already gets through.
+    // This same field doubles as the bearer token for a cross-origin caller
+    // (see MW_API_BASE above) — the server accepts it as the session
+    // identifier itself when no cookie is present, which is always true
+    // cross-origin (SameSite=Strict, and no HTTPS to allow SameSite=None).
     var body = opts.body || {};
     if (session) body._csrf = session;
     cfg.headers['Content-Type'] = 'application/json';
     cfg.body = JSON.stringify(body);
-  } else if (opts.body) {
-    cfg.headers['Content-Type'] = 'application/json';
-    cfg.body = JSON.stringify(opts.body);
+  } else {
+    if (opts.body) {
+      cfg.headers['Content-Type'] = 'application/json';
+      cfg.body = JSON.stringify(opts.body);
+    }
+    // Same reasoning as the POST body field above, but GET has no body to
+    // carry it in, so it rides in the query string instead. Harmless to
+    // attach even when running on the router itself with a valid cookie —
+    // the server only looks at this when no cookie is present.
+    if (session) path += (path.indexOf('?') === -1 ? '?' : '&') + 'session=' + encodeURIComponent(session);
   }
 
   return fetch(API + path, cfg).then(function (r) {
@@ -202,13 +217,13 @@ $('#login-form').addEventListener('submit', function (e) {
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Signing in';
 
   api('/login', { method: 'POST', body: { username: 'root', password: $('#login-pass').value } })
-    .then(function (r) { session = r.session; showApp(); })
+    .then(function (r) { session = r.session; saveRemoteSession(session); showApp(); })
     .catch(function (e) { err.textContent = e.message; err.hidden = false; })
     .then(function () { loginInFlight = false; btn.disabled = false; btn.textContent = 'Sign in'; });
 });
 
 $('#logout-btn').addEventListener('click', function () {
-  api('/logout', { method: 'POST' }).catch(function () {}).then(showLogin);
+  api('/logout', { method: 'POST' }).catch(function () {}).then(function () { saveRemoteSession(null); showLogin(); });
 });
 
 $('#theme-toggle').addEventListener('click', function () {
@@ -1935,7 +1950,8 @@ views.system = function () {
       '<div class="card"><div class="card-head"><h3>Backup and restore</h3></div><div class="card-body">' +
         '<p class="hint" style="margin-top:0">The backup contains your entire configuration, including Wi-Fi ' +
         'passwords and any VPN keys. Store it somewhere private.</p>' +
-        '<div class="btn-row"><a class="btn" href="' + API + '/system/backup" download>Download backup</a></div>' +
+        '<div class="btn-row"><a class="btn" href="' + API + '/system/backup' +
+          (session ? '?session=' + encodeURIComponent(session) : '') + '" download>Download backup</a></div>' +
         '<p class="hint" style="margin-top:14px">To restore, upload the archive over SSH and run ' +
         '<code>sysupgrade -r &lt;file&gt; &amp;&amp; reboot</code>. Restore is deliberately not a one-click button here ' +
         'because a bad archive can leave the device unreachable.</p></div></div>' +
@@ -2018,15 +2034,32 @@ function pollUpdate() {
 
 /* ======================= boot ======================= */
 
-/* Restore an existing session on reload. The cookie is HttpOnly so the token
-   cannot be read from script; /status returns it for a request that already
-   authenticated by cookie. */
+// Running standalone (see MW_API_BASE above): there's no cookie to restore a
+// session from, so the token itself is what's persisted, in this origin's
+// own localStorage — private to whoever is using this specific copy of the
+// page, never sent anywhere but back to the router as the existing "session"
+// query param / "_csrf" body field already do.
+var REMOTE = !!window.MW_API_BASE;
+function saveRemoteSession(sid) {
+  if (!REMOTE) return;
+  try { sid ? localStorage.setItem('mw-remote-session', sid) : localStorage.removeItem('mw-remote-session'); } catch (e) {}
+}
+
+/* Restore an existing session on reload. On the router itself, the cookie is
+   HttpOnly so the token cannot be read from script; /status returns it for a
+   request that already authenticated by cookie. Standalone, there is no
+   cookie at all, so the saved token (if any) is attached before this first
+   call even goes out. */
+if (REMOTE) {
+  try { session = localStorage.getItem('mw-remote-session') || null; } catch (e) {}
+}
 api('/status').then(function (s) {
   if (!s.session) throw new Error('no session');
   session = s.session;
+  saveRemoteSession(session);
   window.__status = s;
   showApp();
-}).catch(showLogin);
+}).catch(function (e) { saveRemoteSession(null); showLogin(); });
 
 /* ======================= auto-reload on new deploy ======================= */
 /* This page is a single-page app: moving between sections only ever changes

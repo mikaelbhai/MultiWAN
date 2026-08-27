@@ -33,6 +33,17 @@ send_headers() {
     # The SPA is entirely self-contained; nothing loads from off-box. A strict
     # CSP means a reflected value that escaped json_escape still cannot execute.
     printf "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'\r\n"
+    # CORS: lets an entirely separate app on another origin (a different
+    # website, or non-browser software) call this API directly. Safe as a
+    # wildcard specifically because auth here never rides on an ambient
+    # cookie for cross-origin callers — see get_session_token below. A
+    # cross-origin caller must already know a real session token (obtained
+    # only via a real /login with the router password) to do anything; the
+    # wildcard just lets a browser read that caller's own authenticated
+    # response, not grant it credentials it doesn't already have.
+    printf 'Access-Control-Allow-Origin: *\r\n'
+    printf 'Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n'
+    printf 'Access-Control-Allow-Headers: Content-Type\r\n'
     [ -n "$extra" ] && printf '%s\r\n' "$extra"
     printf '\r\n'
 }
@@ -44,6 +55,15 @@ fail() { send_headers "${2:-400 Bad Request}"; json_error "$1"; exit 0; }
 # ---------------------------------------------------------------------------
 METHOD="${REQUEST_METHOD:-GET}"
 ROUTE="${PATH_INFO:-/}"
+
+# CORS preflight. A browser sends this ahead of any cross-origin POST (this
+# API is JSON, which counts as a "non-simple" request) to ask permission
+# before sending the real one. Nothing to authenticate or route — just
+# confirm the headers above and stop.
+if [ "$METHOD" = "OPTIONS" ]; then
+    send_headers "204 No Content"
+    exit 0
+fi
 
 # Refuse oversized bodies before reading them into a shell variable.
 BODY=""
@@ -80,9 +100,23 @@ qsval() {
 # ---------------------------------------------------------------------------
 # Session handling
 # ---------------------------------------------------------------------------
-get_cookie_session() {
-    printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | \
-        sed -n 's/^[[:space:]]*mwsession=\([a-f0-9]\{32\}\)$/\1/p' | head -n1
+get_session_token() {
+    local sid
+    sid=$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | \
+        sed -n 's/^[[:space:]]*mwsession=\([a-f0-9]\{32\}\)$/\1/p' | head -n1)
+    if [ -n "$sid" ]; then printf '%s' "$sid"; return; fi
+    # No cookie: this is a cross-origin caller, not the on-router UI.
+    # SameSite=Strict never sends the cookie cross-site, and Secure can't be
+    # set (this is served over plain HTTP), so cross-origin auth instead uses
+    # the same token /login returned as "session", carried explicitly on
+    # every request — as "_csrf" in the body for POST (the existing CSRF
+    # field already serves this purpose) or as "session" in the query string
+    # for GET, which has no body to carry it in.
+    if [ "$METHOD" = "POST" ]; then
+        bodyval _csrf
+    else
+        qsval session
+    fi
 }
 
 session_valid() {
@@ -143,7 +177,7 @@ do_login() {
 }
 
 do_logout() {
-    local sid; sid=$(get_cookie_session)
+    local sid; sid=$(get_session_token)
     [ -n "$sid" ] && ubus -S call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1
     send_headers "200 OK" "Set-Cookie: mwsession=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
     json_ok
@@ -162,7 +196,7 @@ case "$ROUTE" in
 esac
 
 # Everything past this point requires a valid session.
-SID=$(get_cookie_session)
+SID=$(get_session_token)
 if ! session_valid "$SID"; then
     send_headers "401 Unauthorized"
     json_error "Not authenticated."

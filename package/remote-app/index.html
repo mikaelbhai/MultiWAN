@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>MultiWAN</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a84ff'/><path d='M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z' fill='white'/></svg>">
+<script>
+  // This page is served from mikaelbhai.com, entirely separate from the
+  // router — everything it does is over the same public JSON API documented
+  // for third-party integrations, nothing special. Set to the router's
+  // current external address (Remote Access > Method 2 on the router's own
+  // admin UI shows this). Plain http:// on purpose, matching the router's
+  // own admin port — an https:// page here could not call it at all
+  // (browsers block a mixed-content fetch from https to http outright),
+  // which is why this page itself is also served over plain http.
+  window.MW_API_BASE = 'http://103.246.108.118:8443/cgi-bin/mwadmin';
+</script>
+</head>
+<body>
+
+<!-- Shown only when this page loaded over https:// (a browser upgrading a
+     typed bare domain automatically, before ever asking this server — not
+     something this page can prevent). The router's API is plain HTTP only
+     (no cert exists for a bare IP), and browsers hard-block an HTTPS page
+     from calling it at all ("mixed content"), so nothing below this would
+     work in that case.
+     No link, no scripted redirect: tried both live, and a security-minded
+     browser extension actively fought them (this page, on a real domain,
+     navigating to a bare IP address structurally resembles a phishing
+     redirect chain — the extension isn't wrong to be suspicious of that
+     shape, even though this one is legitimate). Typing the address yourself
+     is a plain new navigation with no redirect pattern for anything to
+     flag, so that's what this asks for instead. -->
+<div id="https-notice" style="display:none;position:fixed;inset:0;z-index:999;background:#0b0e14;color:#e6e6e6;align-items:center;justify-content:center;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
+  <div style="max-width:440px;text-align:center;padding:24px">
+    <h2 style="margin:0 0 12px">Type the address instead of clicking a bookmark</h2>
+    <p style="color:#9aa4b2;margin:0 0 12px">Your browser loaded this page over HTTPS, but it has to talk to your
+      router over plain HTTP (no certificate exists for a bare IP address) &mdash; browsers block that combination
+      outright.</p>
+    <p style="color:#9aa4b2;margin:0">In the address bar, replace <code style="color:#e6e6e6">https://</code> with
+      <code style="color:#e6e6e6">http://</code> at the start and press Enter:</p>
+    <p style="margin:16px 0 0;font-family:monospace;font-size:14px;color:#0a84ff;word-break:break-all" id="https-notice-url"></p>
+  </div>
+</div>
+<script>
+  if (location.protocol === 'https:') {
+    document.getElementById('https-notice-url').textContent =
+      'http://' + location.host + location.pathname + location.search + location.hash;
+    document.getElementById('https-notice').style.display = 'flex';
+  }
+</script>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="login" class="login-shell">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-brand">
+      <svg viewBox="0 0 32 32" class="brand-mark"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <div>
+        <h1>MultiWAN</h1>
+        <p>Standalone &middot; talks to your router over its API</p>
+      </div>
+    </div>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" id="login-pass" autocomplete="current-password" required autofocus>
+    </label>
+    <p class="hint">Use the router's <code>root</code> password. This page never stores it &mdash; only the session token it gets back, in this browser's local storage.</p>
+    <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+    <div class="alert alert-error" id="login-error" hidden></div>
+  </form>
+  <p class="login-foot">Connects to <code id="target-addr"></code> &middot; not affiliated with your router's own LAN admin panel</p>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app" hidden>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <svg viewBox="0 0 32 32" class="brand-mark sm"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <span class="topbar-title">MultiWAN</span>
+      <span class="mode-badge" id="mode-badge">&mdash;</span>
+    </div>
+    <div class="topbar-right">
+      <span class="active-wan" id="active-wan-chip">
+        <span class="dot"></span><span id="active-wan-label">&mdash;</span>
+      </span>
+      <button class="btn btn-ghost btn-sm" id="theme-toggle" title="Toggle theme">&#9680;</button>
+      <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <div class="rollback-bar" id="rollback-bar" hidden>
+    <strong>Confirm this mode change.</strong>
+    <span>Reverting to <b id="rb-target"></b> in <b id="rb-seconds"></b>s unless you confirm you still have access.</span>
+    <button class="btn btn-warn btn-sm" id="rb-confirm">Keep this configuration</button>
+  </div>
+
+  <div class="layout">
+    <nav class="sidebar" id="sidebar">
+      <div class="nav-group">
+        <span class="nav-label">Overview</span>
+        <a href="#/dashboard" data-nav>Dashboard</a>
+        <a href="#/wan" data-nav>WAN &amp; failover</a>
+        <a href="#/ports" data-nav>Ports</a>
+        <a href="#/devices" data-nav>Devices</a>
+        <a href="#/nodes" data-nav>Nodes &amp; Networks</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Network</span>
+        <a href="#/lan" data-nav>LAN &amp; DHCP</a>
+        <a href="#/wifi" data-nav>Wi-Fi</a>
+        <a href="#/dns" data-nav>DNS</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Security</span>
+        <a href="#/firewall" data-nav>Firewall</a>
+        <a href="#/vpn" data-nav>WireGuard</a>
+        <a href="#/remote" data-nav>Remote Access</a>
+        <a href="#/qos" data-nav>QoS</a>
+        <a href="#/ddns" data-nav>Dynamic DNS</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">System</span>
+        <a href="#/alerts" data-nav>Alerts</a>
+        <a href="#/diagnostics" data-nav>Diagnostics</a>
+        <a href="#/mode" data-nav>Operating mode</a>
+        <a href="#/system" data-nav>System</a>
+      </div>
+    </nav>
+
+    <main class="content" id="view"></main>
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-danger" id="modal-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>document.getElementById('target-addr').textContent = window.MW_API_BASE.replace('/cgi-bin/mwadmin', '');</script>
+<script src="app.js"></script>
+</body>
+</html>
