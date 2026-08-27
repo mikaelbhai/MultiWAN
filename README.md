@@ -153,7 +153,8 @@ MultiWAN/
 │   ├── 02-flashing-and-recovery.md    Flash steps, stock backup, TFTP unbrick
 │   ├── 03-failover-expectations.md    Honest timing, what breaks, bonding verdict
 │   ├── 04-verification-checklist.md   Step-by-step acceptance tests
-│   └── 05-huawei-optixstar-k562e-10-assessment.md  NO-GO verdict + alternatives
+│   ├── 05-huawei-optixstar-k562e-10-assessment.md  NO-GO verdict + alternatives
+│   └── 06-remote-access-relay.md      Internet admin access: setup, relay-host manual step
 ├── config/
 │   ├── install.sh                     Runs everything in order
 │   ├── 00-packages.sh                 opkg/apk install with flash budget check
@@ -165,9 +166,10 @@ MultiWAN/
 ├── package/                           The on-router admin application
 │   ├── www/                           SPA (index.html, app.css, app.js)
 │   ├── cgi-bin/mwadmin                API entry point
-│   ├── lib/                           API handlers, port detect, mode switch
+│   ├── lib/                           API handlers, port detect, mode switch, history offload
 │   ├── hotplug/                       netifd/hotplug integration
 │   ├── init.d/mwadmin                 Service + LAN-bound uhttpd instance
+│   ├── init.d/mwremote                Outbound relay tunnel for internet admin access
 │   └── etc/                           Default state files
 └── deploy/
     ├── deploy.sh                      Push to router over SSH (from Linux/macOS)
@@ -202,12 +204,26 @@ Full detail in [`docs/03-failover-expectations.md`](docs/03-failover-expectation
 ## Security posture
 
 - Admin UI binds to the **LAN IP only** (`192.168.20.1:8080`), never `0.0.0.0`.
-- No WAN firewall rule is created for it. Remote access is opt-in in the UI and shows an
+- No WAN firewall rule is created for it. Direct WAN exposure is opt-in in the UI and shows an
   explicit warning before it will enable.
+- A separate, also opt-in **Remote Access** page (`docs/06-remote-access-relay.md`) offers a
+  second way to reach the admin UI from the internet: an *outbound* SSH tunnel to a relay host you
+  control, so the router itself never accepts an inbound WAN connection at all. Requires a
+  one-time manual step on the relay host (its own reverse proxy + TLS), documented in full there.
 - Authentication uses `rpcd` sessions against the router root password, with a session timeout.
-- The Router/AP mode switch uses a **90-second confirmed-apply rollback** — if you lose access
-  after switching, the router reverts on its own. This is the single most important safety
-  feature in the app.
+- The Router/AP mode switch **and any LAN IP/netmask change** use a **90-second confirmed-apply
+  rollback** — if you lose access after either, the router reverts on its own. This is the
+  single most important safety feature in the app.
+- A fixed hostname (`ROUTER_HOSTNAME` in `mwan.env`, default `multiwan.router`) always resolves
+  to the admin UI's address, the same trick as `tplinkwifi.net`. It's kept in sync automatically
+  whenever the LAN IP changes — from the UI, LuCI, or a manual `uci set` — so bookmarking it means
+  you never have to chase a changed IP again. It only resolves for LAN clients using this router
+  as their DNS server (the default) and is not a real, publicly-registered domain.
+- To make that hostname work with no `:8080` suffix, the admin UI gets a second, LAN-only address
+  dedicated to port 80 (`ADMIN_ALIAS_HOST` in `mwan.env`, default `.254`), and LuCI's own plain-HTTP
+  listener — normally wildcard-bound, which blocks anything else from using port 80 anywhere on the
+  box — is narrowed to just its own LAN address to free that port up. LuCI keeps working exactly as
+  before on the primary LAN IP; it just no longer also listens on every other address.
 
 ---
 

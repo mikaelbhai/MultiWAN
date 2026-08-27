@@ -70,6 +70,11 @@ OPTIONAL=""
 [ "$FEAT_DDNS"      = "1" ] && OPTIONAL="$OPTIONAL ddns-scripts"
 [ "$FEAT_SQM"       = "1" ] && OPTIONAL="$OPTIONAL sqm-scripts"
 [ "$FEAT_UPNP"      = "1" ] && OPTIONAL="$OPTIONAL miniupnpd-nftables"
+[ "$FEAT_ADBLOCK"   = "1" ] && OPTIONAL="$OPTIONAL adblock"
+[ "$FEAT_ALERTS"    = "1" ] && OPTIONAL="$OPTIONAL msmtp"
+# Remote Access (the outbound relay tunnel) needs no package here at all:
+# confirmed live that dropbear's own client — already present on every
+# OpenWrt install as /usr/bin/ssh — supports -R remote forwarding directly.
 
 say "Installing required: $REQUIRED"
 # shellcheck disable=SC2086
@@ -111,5 +116,53 @@ fi
 # just turn it on.
 /etc/init.d/nlbwmon enable >/dev/null 2>&1
 /etc/init.d/nlbwmon start >/dev/null 2>&1
+
+# --- Adblock: safe defaults, verified on this exact device --------------------
+# The stock config defaults to three feed sources, one of them explicitly
+# marked "L" (large) in adblock's own feed catalogue. Enabling that default
+# on this 128 MB device triggered real memory pressure (kernel pre-OOM
+# accounting logged, "dns backend restart with adblock blocklist failed") —
+# confirmed by testing, not theoretical. Off by default even when installed;
+# the admin UI's toggle is what actually turns it on.
+#
+# When you DO turn it on, this config uses custom feeds pointing directly at
+# the source files, not the stock category feeds — both "stevenblack" and
+# "hagezi" category indirection 404 on this build's fetch logic (confirmed:
+# the bare base URL each constructs returns 404, while the correct full URL
+# with the file path appended returns 200). The custom feeds sidestep that
+# bug entirely by using the working URLs directly.
+#
+# Two feeds combined: StevenBlack's base hosts file (general ads/malware) plus
+# Hagezi's "light" list (trackers, analytics SDKs, and OEM telemetry —
+# Xiaomi/Huawei/Samsung etc — that StevenBlack's list doesn't cover; gap
+# confirmed against a real-world sample of unblocked tracker domains).
+# Result on this hardware: ~86,000 domains after dedup, well inside the
+# available headroom (measured: ~2 MB of available RAM consumed).
+if [ "$FEAT_ADBLOCK" = "1" ]; then
+    uci set adblock.global.adb_enabled='0'
+    uci -q delete adblock.global.adb_feed
+    uci add_list adblock.global.adb_feed='stevenblack_direct'
+    uci add_list adblock.global.adb_feed='hagezi_light'
+    uci commit adblock
+
+    cat > /etc/adblock/adblock.custom.feeds <<'EOF'
+{
+	"stevenblack_direct": {
+		"url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+		"rule": "feed 0.0.0.0 2",
+		"size": "M",
+		"descr": "stevenblack base list, direct URL (category indirection 404s on this build)"
+	},
+	"hagezi_light": {
+		"url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/light-onlydomains.txt",
+		"rule": "feed 1",
+		"size": "M",
+		"descr": "hagezi light: ads, trackers, analytics, OEM telemetry (Xiaomi/Huawei/Samsung/etc), direct URL"
+	}
+}
+EOF
+    /etc/init.d/adblock enable >/dev/null 2>&1
+    say "adblock installed, configured, left OFF — enable it from the admin UI (DNS page or Easy Setup)"
+fi
 
 say "Package stage complete. Free overlay now: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4}')"

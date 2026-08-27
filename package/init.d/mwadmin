@@ -13,7 +13,7 @@ USE_PROCD=1
 WWW_ROOT="/www/mwadmin"
 
 configure_uhttpd() {
-    local lan_ip port
+    local lan_ip port admin_ip is_router=1
 
     lan_ip=$(uci -q get network.lan.ipaddr)
     port=$(uci -q get mwadmin.@main[0].port 2>/dev/null)
@@ -23,6 +23,7 @@ configure_uhttpd() {
     # Fall back to the address actually assigned to br-lan.
     if [ -z "$lan_ip" ]; then
         lan_ip=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        is_router=0
     fi
 
     if [ -z "$lan_ip" ]; then
@@ -30,19 +31,29 @@ configure_uhttpd() {
         return 1
     fi
 
+    # The port-80 alias only makes sense in Router mode: it's a second static
+    # address on our own bridge, and in AP mode "our own bridge" is a DHCP
+    # client on somebody else's network we don't control — statically
+    # claiming an address there could collide with a real device on it.
+    if [ "$is_router" = "1" ]; then
+        admin_ip=$(sync_admin_alias "$lan_ip")
+        [ -n "$admin_ip" ] && sync_luci_bind "$lan_ip"
+    fi
+
     # ---------------------------------------------------------------------
     # THE SECURITY-CRITICAL LINE
     # ---------------------------------------------------------------------
-    # listen_http is set to "<lan_ip>:<port>", never "0.0.0.0:<port>".
-    # Binding to a specific address means the socket does not exist on the WAN
-    # interfaces at all. Even if a firewall rule were later added by mistake,
-    # there would be nothing listening on the WAN side to accept a connection.
-    # The firewall rule in config/20-firewall.sh is the second layer, not the
-    # only one.
+    # listen_http only ever gets "<lan_ip>:<port>" and, if the dedicated alias
+    # exists, "<admin_ip>:80" — never "0.0.0.0:<port>". Binding to specific
+    # addresses means the socket does not exist on the WAN interfaces at all.
+    # Even if a firewall rule were later added by mistake, there would be
+    # nothing listening on the WAN side to accept a connection. The firewall
+    # rule in config/20-firewall.sh is the second layer, not the only one.
     uci set uhttpd.mwadmin='uhttpd'
     uci -q delete uhttpd.mwadmin.listen_http
     uci -q delete uhttpd.mwadmin.listen_https
     uci add_list uhttpd.mwadmin.listen_http="${lan_ip}:${port}"
+    [ -n "$admin_ip" ] && uci add_list uhttpd.mwadmin.listen_http="${admin_ip}:80"
     uci set uhttpd.mwadmin.home="$WWW_ROOT"
     uci set uhttpd.mwadmin.cgi_prefix='/cgi-bin'
     uci set uhttpd.mwadmin.index_page='index.html'
@@ -57,10 +68,100 @@ configure_uhttpd() {
     uci set uhttpd.mwadmin.no_symlinks='1'
     uci commit uhttpd
 
-    logger -t mwadmin "admin UI configured on ${lan_ip}:${port}"
+    if [ -n "$admin_ip" ]; then
+        logger -t mwadmin "admin UI configured on ${lan_ip}:${port} and ${admin_ip}:80"
+    else
+        logger -t mwadmin "admin UI configured on ${lan_ip}:${port}"
+    fi
+
+    # The friendly hostname should land on the bare-port-80 alias when one
+    # exists (that's the whole point of it), otherwise on lan_ip:port.
+    sync_hostname_alias "${admin_ip:-$lan_ip}"
+}
+
+# Keeps config/10-network.sh's "lan_admin" alias interface — the dedicated
+# LAN-only address the admin UI binds port 80 on, so ROUTER_HOSTNAME needs no
+# ":8080" suffix — inside whatever subnet the LAN currently is. Only the host
+# octet is preserved; the network part is recomputed from lan_ip every time,
+# so this self-heals the same way sync_hostname_alias does. Prints the
+# (possibly just-updated) alias address, or nothing if the feature was never
+# installed.
+sync_admin_alias() {
+    local lan_ip="$1" cur host_octet new_ip
+
+    cur=$(uci -q get network.lan_admin.ipaddr)
+    [ -z "$cur" ] && return 0
+
+    host_octet="${cur##*.}"
+    new_ip="${lan_ip%.*}.$host_octet"
+
+    if [ "$new_ip" != "$cur" ]; then
+        uci set network.lan_admin.ipaddr="$new_ip"
+        uci commit network
+        logger -t mwadmin "admin alias address repointed: $cur -> $new_ip"
+        # Bring the new address up. Network config just changed again, so
+        # this fires our own reload trigger once more; that second pass finds
+        # nothing left to change (new_ip = cur by then) and returns at once —
+        # not a loop, just one harmless extra round trip.
+        /etc/init.d/network reload
+        cur="$new_ip"
+    fi
+
+    printf '%s' "$cur"
+}
+
+# LuCI's default uhttpd instance ("main") wildcard-binds 0.0.0.0:80 by
+# default. On Linux a wildcard bind on a port blocks any other process from
+# binding ANY address on that same port — not just the same address — so as
+# long as that wildcard bind exists, our admin_ip:80 alias can never come up,
+# full stop. This narrows "main"'s plain-HTTP bind to just the LAN address it
+# actually needs to serve, freeing port 80 everywhere else. Only touched when
+# the admin alias exists — no alias, no conflict, LuCI is left on its normal
+# OpenWrt default. HTTPS (443) is untouched either way; there's no port-80
+# style conflict there since nothing else on this box wants 443.
+sync_luci_bind() {
+    local lan_ip="$1" cur
+
+    cur=$(uci -q get uhttpd.main.listen_http | tr ' ' '\n' | grep -m1 ':80$')
+    [ "$cur" = "${lan_ip}:80" ] && return 0
+
+    uci -q delete uhttpd.main.listen_http
+    uci add_list uhttpd.main.listen_http="${lan_ip}:80"
+    uci add_list uhttpd.main.listen_http='[::]:80'
+    uci commit uhttpd
+
+    logger -t mwadmin "LuCI HTTP listener narrowed to ${lan_ip}:80 (was ${cur:-0.0.0.0:80}) to free port 80 for the admin alias"
+}
+
+# Keeps the friendly hostname (config/50-system-dhcp.sh's "mwadmin_alias"
+# domain record, e.g. multiwan.router) pointed at wherever the admin UI actually
+# listens on port 80 (the alias address if one exists, else the LAN address).
+# Runs on every start/reload, so it self-heals whether that address changed
+# via this app, LuCI, or a manual `uci set` over SSH. A no-op section (only
+# touches it if the install script created it) means installs from before
+# this existed, or with ROUTER_HOSTNAME unset, are unaffected.
+sync_hostname_alias() {
+    local target_ip="$1" cur
+
+    cur=$(uci -q get dhcp.mwadmin_alias.ip)
+    [ -z "$cur" ] && return 0
+    [ "$cur" = "$target_ip" ] && return 0
+
+    uci set dhcp.mwadmin_alias.ip="$target_ip"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart
+
+    logger -t mwadmin "hostname alias $(uci -q get dhcp.mwadmin_alias.name) repointed: ${cur} -> ${target_ip}"
 }
 
 start_service() {
+    # uci can add sections to an existing package file but cannot conjure the
+    # file itself from nothing — without this, every api.sh call that writes
+    # to the "mwadmin" uci config (alerts settings, the custom admin port,
+    # nodes) fails silently with "uci: Entry not found" the first time it
+    # runs on a fresh install, before anything has ever written to it.
+    [ -f /etc/config/mwadmin ] || touch /etc/config/mwadmin
+
     configure_uhttpd || return 1
 
     mkdir -p /tmp/mwadmin/ports /tmp/mwadmin/locks

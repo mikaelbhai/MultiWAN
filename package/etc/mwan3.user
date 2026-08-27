@@ -1,0 +1,97 @@
+#!/bin/sh
+# /etc/mwan3.user — mwan3's own hook for interface tracking state changes.
+#
+# Called by /etc/hotplug.d/iface/16-mwan3-user with ACTION set to mwan3's own
+# tracking verdict — "connected" / "disconnected" — not netifd's ifup/ifdown.
+# That distinction is the whole reason this hook exists rather than reusing
+# the netifd hotplug script already in this project (95-mwadmin-portdetect):
+# netifd's ifup/ifdown fires on the physical/DHCP link state, so a WAN whose
+# cable stays plugged in but whose upstream ISP is silently dead — the
+# actual "your internet is down" scenario mwan3's ping tracking exists to
+# catch — never generates an ifdown at all. mwan3's own connected/disconnected
+# verdict is the only signal that reflects what the failover system itself
+# believes, which is what "network down" alerting should be reacting to.
+#
+# INTERFACE here is wan1/wan2/wan3 — mwan3's logical name, not the physical
+# device — matching how the rest of this project already refers to uplinks.
+
+[ -x /usr/lib/mwadmin/send_alert.sh ] || exit 0
+. /usr/lib/mwadmin/common.sh
+
+case "$INTERFACE" in
+    wan1|wan2|wan3) ;;
+    *) exit 0 ;;
+esac
+
+alert_this_wan() {
+    case "$INTERFACE" in
+        wan1) [ "$(uget_d mwadmin.alerts.alert_wan1_down 1)" = "1" ] ;;
+        wan2) [ "$(uget_d mwadmin.alerts.alert_wan2_down 0)" = "1" ] ;;
+        wan3) [ "$(uget_d mwadmin.alerts.alert_wan3_down 0)" = "1" ] ;;
+    esac
+}
+
+# All currently-connected mwan3-tracked WANs, same technique api_status
+# already uses — reused here rather than re-deriving it, so "all WANs down"
+# means the exact same thing in the alert as it does on the dashboard.
+any_wan_still_up() {
+    local st
+    st=$(mwan3 status 2>/dev/null | sed -n 's/^[[:space:]]*interface \(wan[0-9]\) is \([a-z]*\).*/\1:\2/p')
+    printf '%s\n' "$st" | grep -q ':online$'
+}
+
+# Persisted online/offline history, independent of whether alerting is even
+# configured — this is what powers the "line reporting" panel in the admin
+# UI. Capped at the most recent 500 events so a flapping line can't grow this
+# file without bound; write frequency is "once per genuine state change",
+# which on NOR flash is negligible even over a bad day.
+log_wan_history() {
+    local dir="$MW_STATE/history" f
+    mkdir -p "$dir" 2>/dev/null
+    f="$dir/wan.log"
+    printf '%s|%s|%s\n' "$(date +%s)" "$INTERFACE" "$1" >> "$f"
+    if [ "$(wc -l < "$f" 2>/dev/null)" -gt 500 ] 2>/dev/null; then
+        tail -n 500 "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    fi
+}
+
+case "$ACTION" in
+    disconnected)
+        log_wan_history down
+
+        if alert_this_wan; then
+            ( /usr/lib/mwadmin/send_alert.sh \
+                "$INTERFACE is down" \
+                "$INTERFACE lost tracking connectivity and mwan3 has marked it offline. Traffic is failing over to the next priority uplink if one is available." \
+            ) &
+        fi
+
+        # The "all WANs down" case is the one that actually matters most —
+        # it means the network genuinely has no working internet path, not
+        # just that failover is doing its job — so it is checked
+        # independently of the per-WAN toggles above and fires even if you
+        # turned off alerts for whichever specific WAN just failed.
+        if [ "$(uget_d mwadmin.alerts.alert_all_down 1)" = "1" ] && ! any_wan_still_up; then
+            ( /usr/lib/mwadmin/send_alert.sh \
+                "ALL uplinks are down" \
+                "Every tracked WAN (wan1/wan2/wan3, whichever are enabled) is currently offline. There is no working internet path out of this network right now." \
+            ) &
+        fi
+        ;;
+    connected)
+        log_wan_history up
+
+        # Failback confirmation for WAN1 specifically — the one link where
+        # "it's back" is worth a message on its own, since it means priority
+        # traffic has returned to the fast/primary line. Not sent for
+        # WAN2/WAN3 recovering; that's expected backup behaviour, not news.
+        if [ "$INTERFACE" = "wan1" ] && [ "$(uget_d mwadmin.alerts.alert_wan1_down 1)" = "1" ]; then
+            ( /usr/lib/mwadmin/send_alert.sh \
+                "wan1 is back" \
+                "wan1 has regained tracking connectivity. Traffic will fail back to it automatically." \
+            ) &
+        fi
+        ;;
+esac
+
+exit 0

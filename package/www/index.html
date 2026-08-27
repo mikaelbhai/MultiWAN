@@ -76,25 +76,56 @@
     <section class="ez-card">
       <h2>Wi-Fi</h2>
       <div class="ez-sub">This name and password work for both the fast and long-range signals.</div>
-      <div class="ez-field">
-        <label for="ez-ssid">Network name</label>
-        <input type="text" id="ez-ssid" maxlength="32">
-      </div>
-      <div class="ez-field">
-        <label for="ez-key">Password</label>
-        <div class="ez-pw-wrap">
-          <input type="password" id="ez-key" maxlength="63">
-          <button type="button" id="ez-key-show">Show</button>
-        </div>
-      </div>
       <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px">
         <div>
-          <div class="ez-switch-label">Hide network name</div>
-          <div class="ez-switch-desc">Your Wi-Fi won't show up in scan lists. You'll need to type the name in manually on new devices.</div>
+          <div class="ez-switch-label">Wi-Fi</div>
+          <div class="ez-switch-desc">Turns both radios off entirely — for when wireless is fully handled by another access point and you don't want this router's own Wi-Fi broadcasting at all.</div>
         </div>
-        <button type="button" class="ez-switch" id="ez-hidden-toggle"></button>
+        <button type="button" class="ez-switch" id="ez-wifi-onoff"></button>
       </div>
-      <button class="ez-btn ez-btn-primary ez-btn-block" id="ez-wifi-save">Save Wi-Fi settings</button>
+      <div id="ez-wifi-fields">
+        <div class="ez-field">
+          <label for="ez-ssid">Network name</label>
+          <input type="text" id="ez-ssid" maxlength="32">
+        </div>
+        <div class="ez-field">
+          <label for="ez-key">Password</label>
+          <div class="ez-pw-wrap">
+            <input type="password" id="ez-key" maxlength="63">
+            <button type="button" id="ez-key-show">Show</button>
+          </div>
+        </div>
+        <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px">
+          <div>
+            <div class="ez-switch-label">Hide network name</div>
+            <div class="ez-switch-desc">Your Wi-Fi won't show up in scan lists. You'll need to type the name in manually on new devices.</div>
+          </div>
+          <button type="button" class="ez-switch" id="ez-hidden-toggle"></button>
+        </div>
+        <button class="ez-btn ez-btn-primary ez-btn-block" id="ez-wifi-save">Save Wi-Fi settings</button>
+      </div>
+    </section>
+
+    <!-- ---------- AD BLOCKING ---------- -->
+    <section class="ez-card">
+      <h2>Ad blocking</h2>
+      <div class="ez-sub">Blocks ads and trackers for every device on the network — no per-device setup.</div>
+      <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px">
+        <div>
+          <div class="ez-switch-label">Block ads and trackers</div>
+          <div class="ez-switch-desc" id="ez-adblock-desc">Loading&hellip;</div>
+        </div>
+        <button type="button" class="ez-switch" id="ez-adblock-toggle"></button>
+      </div>
+    </section>
+
+    <!-- ---------- SOFTWARE UPDATE ---------- -->
+    <section class="ez-card">
+      <h2>Software update</h2>
+      <div class="ez-sub" id="ez-update-sub">Checking&hellip;</div>
+      <button class="ez-btn" id="ez-update-check">Check for updates</button>
+      <button class="ez-btn ez-btn-primary" id="ez-update-apply" hidden style="margin-top:10px">Install update</button>
+      <div class="ez-note" id="ez-update-progress" hidden></div>
     </section>
 
   </div>

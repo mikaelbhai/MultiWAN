@@ -90,7 +90,43 @@ uci set network.lan.device='br-lan'
 uci set network.lan.proto='static'
 uci set network.lan.ipaddr="$LAN_IPADDR"
 uci set network.lan.netmask="$LAN_NETMASK"
-uci set network.lan.ip6assign='60'
+# Deliberately NOT setting ip6assign. Neither WAN provides real IPv6 (no
+# DHCPv6-PD, mwan3's own ipv6 policy is permanently "unreachable") — assigning
+# a ULA prefix here anyway just hands LAN clients an IPv6 address that goes
+# nowhere. IPv6-preferring devices (Pixels notably) try that dead address
+# first, get an instant failure, and report "limited connectivity" even
+# though IPv4 is completely fine — confirmed as the actual cause of exactly
+# that symptom on this network. Not offering IPv6 at all is the correct fix
+# when there is no working upstream v6 to back it with; see 50-system-dhcp.sh
+# for the matching dhcp.lan.ra/dhcpv6 settings.
+
+# --- Dedicated LAN alias for the admin UI on port 80 -------------------------
+# LuCI already owns port 80 (wildcard-bound to 0.0.0.0, which on Linux blocks
+# any other process from taking that port on any address at all). To let
+# ROUTER_HOSTNAME (e.g. multiwan.router) work with no ":8080" suffix — the whole
+# point of it — the admin UI gets a second, dedicated address on the same LAN
+# and claims port 80 there. package/init.d/mwadmin then narrows LuCI's own
+# plain-HTTP bind down to just the primary LAN address (freeing the wildcard),
+# the moment it detects this alias exists — LuCI keeps working exactly as
+# before on the primary address, just no longer also listening everywhere.
+#
+# ADMIN_ALIAS_HOST is just the last octet, combined with whatever subnet
+# LAN_IPADDR is currently in — so it tracks a LAN IP change automatically
+# (package/init.d/mwadmin recomputes and repoints it, same as the hostname).
+# Default .254 sits above the DHCP pool documented in mwan.env (.2-.201) but
+# check for a collision with any static reservation you've made by hand in
+# the .202-.253 range before relying on the default.
+if [ -n "$ROUTER_HOSTNAME" ]; then
+    ADMIN_ALIAS_HOST="${ADMIN_ALIAS_HOST:-254}"
+    say "admin UI alias: ${LAN_IPADDR%.*}.$ADMIN_ALIAS_HOST:80 (for $ROUTER_HOSTNAME)"
+    uci set network.lan_admin='interface'
+    uci set network.lan_admin.device='br-lan'
+    uci set network.lan_admin.proto='static'
+    uci set network.lan_admin.ipaddr="${LAN_IPADDR%.*}.$ADMIN_ALIAS_HOST"
+    uci set network.lan_admin.netmask='255.255.255.255'
+else
+    uci -q delete network.lan_admin || true
+fi
 
 # --- WAN1: highest priority ---------------------------------------------------
 # metric 10/20/30 orders the default routes in the main table. mwan3 does the
@@ -146,6 +182,16 @@ uci -q delete network.wan1.dns || true
 for d in $WAN1_DNS; do
     uci add_list network.wan1.dns="$d"
 done
+# No working IPv6 upstream — see the LAN comment above. Some ISP-side gear
+# (a Huawei ONT on WAN2, confirmed on this deployment) advertises real
+# DHCPv6-PD/RA even though we don't want it. Without this, netifd accepts
+# the delegation, odhcpd assigns the prefix to LAN, and the resulting route
+# outlives every LAN-side fix (ra/dhcpv6 disabled, ip6assign removed) because
+# it's a kernel route with its own expiry timer, not just config — odhcpd
+# re-touches it from its own cached PIO state independent of what's asked of
+# it downstream. Stopping the WAN side from ever accepting v6 in the first
+# place is the only fix that actually holds.
+uci set network.wan1.ipv6='0'
 
 # --- WAN2 / WAN3: DHCP --------------------------------------------------------
 # peerdns 0: we do NOT want three ISPs each injecting their own resolvers into
@@ -156,12 +202,14 @@ uci set network.wan2.device="$PORT_WAN2"
 uci set network.wan2.proto='dhcp'
 uci set network.wan2.metric='20'
 uci set network.wan2.peerdns='0'
+uci set network.wan2.ipv6='0'   # see the WAN1 comment above
 
 uci set network.wan3='interface'
 uci set network.wan3.device="$PORT_WAN3"
 uci set network.wan3.proto='dhcp'
 uci set network.wan3.metric='30'
 uci set network.wan3.peerdns='0'
+uci set network.wan3.ipv6='0'   # see the WAN1 comment above
 
 # --- Guest network (bridge-less, wireless-only) -------------------------------
 if [ "$WIFI_GUEST_ENABLE" = "1" ]; then

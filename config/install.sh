@@ -104,7 +104,8 @@ Check failover state:
 
 ${YEL}Next: deploy the admin UI.${RST}
   From your workstation:  deploy/deploy.ps1  (Windows)  or  deploy/deploy.sh
-  Then browse to:         http://$LAN_IPADDR:$ADMIN_PORT
+  Then browse to:         http://${ROUTER_HOSTNAME:-$LAN_IPADDR}:$ADMIN_PORT
+$([ -n "$ROUTER_HOSTNAME" ] && echo "                          (or the IP directly: http://$LAN_IPADDR:$ADMIN_PORT — the hostname survives a future LAN IP change, the raw IP won't)")
 
 ${YEL}Then work through docs/04-verification-checklist.md.${RST}
 Do not consider this done until the failover test in that checklist passes.

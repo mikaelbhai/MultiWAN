@@ -5,7 +5,7 @@
 
 var API = 'cgi-bin/mwadmin';
 var session = null;
-var statusTimer = null, bwTimer = null, devTimer = null;
+var statusTimer = null, bwTimer = null, devTimer = null, nodeTimer = null, remoteTimer = null;
 var bwHistory = {};
 
 /* ======================= helpers ======================= */
@@ -61,6 +61,30 @@ function toast(msg, kind) {
   }, kind === 'error' ? 6000 : 3400);
 }
 
+// Polls `url` (cross-origin — this fires after a LAN IP change, so it's a
+// different host:port than the page currently running this code) and
+// navigates the browser there the moment it's reachable. `no-cors` mode
+// still rejects on real network failures (DNS, connection refused, timeout);
+// it only limits what we're allowed to read from the response, and we don't
+// need to read anything — reachable is enough. Gives the router's background
+// network reload + dnsmasq/uhttpd restart a few seconds before the first
+// attempt, then retries for up to 30s before giving up quietly.
+function redirectWhenReachable(url) {
+  var deadline = Date.now() + 30000;
+  function attempt() {
+    fetch(url, { mode: 'no-cors', cache: 'no-store' }).then(function () {
+      window.location.href = url;
+    }).catch(function () {
+      if (Date.now() < deadline) {
+        setTimeout(attempt, 1500);
+      } else {
+        toast('Could not reach ' + url + ' automatically. The change may still be applying — try it manually in a moment.', 'error');
+      }
+    });
+  }
+  setTimeout(attempt, 3000);
+}
+
 function confirmModal(title, bodyHtml, okLabel, danger) {
   return new Promise(function (resolve) {
     $('#modal-title').textContent = title;
@@ -112,6 +136,23 @@ function fmtAgo(ts) {
 /* Renders a link speed with a warning when a port negotiated below gigabit.
    A WAN1 that quietly came up at 100 Mb because of a bad cable is exactly the
    failure this UI exists to make visible. */
+// Classifies an IPv4 address as private (RFC1918) or carrier-grade-NAT
+// (100.64.0.0/10) — either means port forwarding on THIS router alone won't
+// make that WAN reachable from the internet; something further upstream
+// (an ISP modem/router doing another layer of NAT) needs its own forward
+// pointed at this router. Returns null for an address we can't parse (WAN
+// not up yet).
+function isPrivateIPv4(ip) {
+  if (!ip) return null;
+  var p = ip.split('.').map(Number);
+  if (p.length !== 4 || p.some(function (n) { return isNaN(n); })) return null;
+  if (p[0] === 10) return true;
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+  if (p[0] === 192 && p[1] === 168) return true;
+  if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT
+  return false;
+}
+
 function speedBadge(mbps, carrier) {
   if (!carrier) return '<span class="badge">No link</span>';
   if (!mbps) return '<span class="badge warn">Link, speed unknown</span>';
@@ -122,7 +163,7 @@ function speedBadge(mbps, carrier) {
 /* ======================= auth ======================= */
 
 function showLogin() {
-  clearInterval(statusTimer); clearInterval(bwTimer); clearInterval(devTimer);
+  clearInterval(statusTimer); clearInterval(bwTimer); clearInterval(devTimer); clearInterval(nodeTimer); clearInterval(remoteTimer);
   session = null;
   $('#app').hidden = true;
   $('#login').hidden = false;
@@ -138,6 +179,8 @@ function showApp() {
   statusTimer = setInterval(pollStatus, 4000);
   bwTimer = setInterval(pollBandwidth, 2000);
   devTimer = setInterval(pollDevices, 3000);
+  nodeTimer = setInterval(pollNodes, 3000);
+  remoteTimer = setInterval(pollRemote, 5000);
 }
 
 var loginInFlight = false;
@@ -203,7 +246,8 @@ function pollStatus() {
     var rb = $('#rollback-bar');
     if (s.rollback && s.rollback.pending) {
       rb.hidden = false;
-      $('#rb-target').textContent = s.rollback.revert_to === 'ap' ? 'Access Point mode' : 'Router mode';
+      $('#rb-target').textContent = s.rollback.revert_to === 'ap' ? 'Access Point mode' :
+        s.rollback.revert_to === 'router' ? 'Router mode' : 'the previous LAN settings';
       $('#rb-seconds').textContent = s.rollback.seconds_remaining;
     } else { rb.hidden = true; }
 
@@ -262,6 +306,125 @@ function pollDevices() {
         '<td class="mono">' + (d.online ? mbps(d.up_mbps) : '—') + '</td>' +
         '</tr>';
     }).join('') || '<tr><td colspan="6" class="empty">No devices known yet.</td></tr>';
+  }).catch(function () {});
+}
+
+var NODE_KIND_LABEL = { router: 'Router', ap: 'Access point', other: 'Other' };
+
+function pollNodes() {
+  if (currentView !== 'nodes') return;
+  api('/nodes').then(function (r) {
+    var body = $('#node-tbody');
+    if (!body) return;
+    var rows = (r.nodes || []).slice().sort(function (a, b) {
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    var mbps = function (v) { return v === null || v === undefined ? '—' : v.toFixed(2); };
+    body.innerHTML = rows.map(function (n) {
+      return '<tr' + (n.online ? '' : ' class="dev-offline"') + '>' +
+        '<td>' + esc(n.name) + '</td>' +
+        '<td>' + esc(NODE_KIND_LABEL[n.kind] || 'Other') + '</td>' +
+        '<td class="mono">' + esc(n.ip || '—') + '</td>' +
+        '<td>' + (n.online ? '<span class="badge ok">online</span>' : '<span class="badge">offline</span>') + '</td>' +
+        '<td class="mono">' + (n.online ? mbps(n.down_mbps) : '—') + '</td>' +
+        '<td class="mono">' + (n.online ? mbps(n.up_mbps) : '—') + '</td>' +
+        '<td id="node-test-' + esc(n.id) + '">' +
+          '<button class="btn btn-sm" data-test-node="' + esc(n.id) + '"' + (n.online ? '' : ' disabled') + '>Test</button></td>' +
+        '<td style="white-space:nowrap">' +
+          (n.admin_url ? '<a class="btn btn-sm" href="' + esc(n.admin_url) + '" target="_blank" rel="noopener">Open panel</a> ' : '') +
+          '<button class="btn btn-sm btn-ghost" data-del-node="' + esc(n.id) + '">Remove</button></td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">No nodes added yet.</td></tr>';
+
+    $$('[data-del-node]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-del-node');
+        confirmModal('Remove this node?',
+          'This only removes it from this page — it does not change any setting on the device itself.',
+          'Remove', false).then(function (go) {
+          if (!go) return;
+          api('/nodes/del', { method: 'POST', body: { id: id } })
+            .then(function (rr) { toast(rr.message, 'ok'); pollNodes(); })
+            .catch(function (e) { toast(e.message, 'error'); });
+        });
+      };
+    });
+
+    $$('[data-test-node]').forEach(function (b) {
+      b.onclick = function () { runNodeTest(b.getAttribute('data-test-node')); };
+    });
+    loadHistory();
+  }).catch(function () {});
+}
+
+// Fire-and-poll: start the ping test, then check back every second (up to
+// 15s — six pings at worst-case timeout is well under that) until it lands
+// on a terminal status. The cell is looked up fresh each tick since the node
+// table can re-render out from under a still-running test (currentView
+// guard stops it once you've navigated away entirely).
+function runNodeTest(id) {
+  var cell = $('#node-test-' + id);
+  if (!cell) return;
+  cell.innerHTML = '<span class="badge">testing…</span>';
+  api('/nodes/test', { method: 'POST', body: { id: id } }).then(function () {
+    var tries = 0;
+    (function poll() {
+      if (currentView !== 'nodes') return;
+      tries++;
+      api('/nodes/test?id=' + encodeURIComponent(id)).then(function (r) {
+        var c = $('#node-test-' + id);
+        if (!c) return;
+        if (r.status === 'done') {
+          var lossBad = r.loss_pct === null || r.loss_pct >= 50;
+          c.innerHTML = lossBad
+            ? '<span class="badge danger">' + esc(r.loss_pct == null ? 'no reply' : r.loss_pct + '% loss') + '</span>'
+            : '<span class="badge ' + (r.loss_pct > 0 ? 'warn' : 'ok') + '">' + esc(r.avg_ms) + ' ms' +
+              (r.loss_pct > 0 ? ', ' + esc(r.loss_pct) + '% loss' : '') + '</span>';
+        } else if (tries > 15) {
+          c.innerHTML = '<button class="btn btn-sm" data-test-node="' + esc(id) + '">Test</button>';
+          $$('[data-test-node="' + id + '"]').forEach(function (b) { b.onclick = function () { runNodeTest(id); }; });
+        } else {
+          setTimeout(poll, 1000);
+        }
+      }).catch(function () {});
+    })();
+  }).catch(function (e) {
+    var c = $('#node-test-' + id);
+    if (c) c.innerHTML = '<span class="badge danger">' + esc(e.message) + '</span>';
+  });
+}
+
+function loadHistory() {
+  var body = $('#history-tbody');
+  if (!body) return;
+  api('/history?limit=50').then(function (r) {
+    var b = $('#history-tbody');
+    if (!b) return;
+    b.innerHTML = (r.events || []).map(function (e) {
+      var when = new Date(e.ts * 1000).toLocaleString();
+      var what = (e.kind === 'wan' ? 'WAN ' : '') + esc(e.label);
+      var badge = e.event === 'up' ? '<span class="badge ok">online</span>' : '<span class="badge danger">offline</span>';
+      return '<tr><td class="mono" style="font-size:12px">' + esc(when) + '</td><td>' + what + '</td><td>' + badge + '</td></tr>';
+    }).join('') || '<tr><td colspan="3" class="empty">No events recorded yet.</td></tr>';
+  }).catch(function () {});
+}
+
+function pollRemote() {
+  if (currentView !== 'remote') return;
+  var el = $('#remote-status');
+  if (!el) return;
+  api('/remote/status').then(function (r) {
+    var box = $('#remote-status');
+    if (!box) return; // view changed while the request was in flight
+    if (!r.enabled) {
+      box.innerHTML = '<span class="badge">disabled</span>';
+    } else if (r.running) {
+      box.innerHTML = '<span class="badge ok">connected</span>' +
+        (r.since ? '<p class="hint" style="margin:6px 0 0">up since ' + esc(new Date(r.since * 1000).toLocaleString()) + '</p>' : '');
+    } else {
+      box.innerHTML = '<span class="badge danger">not connected</span>' +
+        '<p class="hint" style="margin:6px 0 0">Enabled but the tunnel isn\'t up yet — check that the relay host is reachable and the public key was added to its authorized_keys.</p>';
+    }
   }).catch(function () {});
 }
 
@@ -586,6 +749,81 @@ views.devices = function () {
   pollDevices();
 };
 
+/* ======================= Nodes & Networks ======================= */
+
+views.nodes = function () {
+  Promise.all([api('/nodes'), api('/devices')]).then(function (res) {
+    var nodes = res[0].nodes || [];
+    var devices = res[1].devices || [];
+    var nodeMacs = {};
+    nodes.forEach(function (n) { if (n.mac) nodeMacs[n.mac.toLowerCase()] = 1; });
+    var candidates = devices.filter(function (d) { return d.mac && !nodeMacs[d.mac.toLowerCase()]; });
+
+    page('Nodes &amp; Networks',
+      'The router and access points behind this box — status, current throughput, and a quick link into each one’s own admin panel.',
+      '<div class="card"><div class="card-head"><h3>Nodes</h3></div><div class="card-body tight">' +
+      '<div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>IP</th><th>Status</th>' +
+      '<th>&darr; Mbps</th><th>&uarr; Mbps</th><th>Reachability</th><th></th></tr></thead>' +
+      '<tbody id="node-tbody"><tr><td colspan="8" class="empty"><span class="spinner"></span></td></tr></tbody>' +
+      '</table></div></div></div>' +
+      '<p class="hint">Throughput is internet traffic only, same as the Devices page — a node running as a plain ' +
+      'access point (bridged) won’t show meaningful usage here since its own clients already appear individually ' +
+      'on Devices; a node routing its own traffic (double-NAT) will. "Reachability" is a ping test (latency/loss) ' +
+      'run on demand — real down/up throughput to an arbitrary node would need software this app can\'t assume ' +
+      'is installed on it.</p>' +
+
+      '<div class="card"><div class="card-head"><h3>Recent activity</h3></div><div class="card-body tight">' +
+      '<div class="tbl-wrap"><table><thead><tr><th>When</th><th>What</th><th>Event</th></tr></thead>' +
+      '<tbody id="history-tbody"><tr><td colspan="3" class="empty"><span class="spinner"></span></td></tr></tbody>' +
+      '</table></div></div></div>' +
+      '<p class="hint">Online/offline transitions for all three WAN lines and every added node, most recent first.</p>' +
+
+      '<div class="card"><div class="card-head"><h3>Add a node</h3></div><div class="card-body">' +
+      (candidates.length ?
+        '<p class="hint" style="margin-top:0">Seen on the network now, not yet added as a node:</p>' +
+        '<div class="tbl-wrap"><table><thead><tr><th>Name</th><th>MAC</th><th>IP</th><th></th></tr></thead><tbody>' +
+        candidates.map(function (d) {
+          return '<tr><td>' + esc(d.name) + '</td>' +
+            '<td class="mono" style="font-size:11.5px">' + esc(d.mac) + '</td>' +
+            '<td class="mono">' + esc(d.ip) + '</td>' +
+            '<td><button class="btn btn-sm" data-pick-node="' + esc(d.mac) + '|' + esc(d.ip) + '|' + esc(d.name) + '">Add as node</button></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p class="hint" style="margin-top:0">Nothing new seen on the ' +
+        'network right now — you can still add one by hand below if it’s offline.</p>') +
+      '<div class="form-row" style="margin-top:14px">' +
+        f('nd-name', 'Name', '') + f('nd-mac', 'MAC address', '') +
+        '<label class="field"><span>Type</span><select id="nd-kind">' +
+        '<option value="router">Router</option><option value="ap">Access point</option>' +
+        '<option value="other">Other</option></select></label></div>' +
+      '<label class="field"><span>Admin panel URL (optional)</span>' +
+      '<input type="text" id="nd-url" placeholder="http://192.168.10.50/ — leave blank to guess from its IP"></label>' +
+      '<button class="btn" id="nd-add">Add node</button></div></div>');
+
+    $$('[data-pick-node]').forEach(function (b) {
+      b.onclick = function () {
+        var p = b.getAttribute('data-pick-node').split('|');
+        $('#nd-mac').value = p[0];
+        $('#nd-url').value = p[1] ? 'http://' + p[1] + '/' : '';
+        $('#nd-name').value = p[2] === 'unnamed' ? '' : p[2];
+        $('#nd-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('#nd-name').focus();
+      };
+    });
+
+    $('#nd-add').onclick = function () {
+      var name = $('#nd-name').value.trim();
+      if (!name) { toast('Give the node a name.', 'error'); return; }
+      api('/nodes/add', { method: 'POST', body: {
+        name: name, mac: $('#nd-mac').value.trim(), kind: $('#nd-kind').value, admin_url: $('#nd-url').value.trim()
+      }}).then(function (r) {
+        toast(r.message, 'ok');
+        views.nodes();
+      }).catch(function (e) { toast(e.message, 'error'); });
+    };
+
+    pollNodes();
+  }).catch(function () {});
+};
+
 function kv(k, v) {
   return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)">' +
     '<span style="color:var(--text-dim)">' + esc(k) + '</span><span class="mono">' + esc(v) + '</span></div>';
@@ -679,6 +917,9 @@ views.lan = function () {
 
     page('LAN &amp; DHCP', 'Local network addressing and the DHCP server.',
       '<div class="card"><div class="card-head"><h3>LAN settings</h3></div><div class="card-body">' +
+        (l.hostname_alias ?
+          '<p class="hint" style="margin-top:0">Always reachable at <strong>http://' + esc(l.hostname_alias) +
+          '</strong>, whatever the router IP below is set to — bookmark that instead of an address.</p>' : '') +
         '<div class="form-row">' +
         f('lan-ip', 'Router IP address', l.ipaddr) + f('lan-mask', 'Subnet mask', l.netmask) + '</div>' +
         '<div class="form-row">' +
@@ -705,14 +946,18 @@ views.lan = function () {
 
     $('#lan-save').onclick = function () {
       confirmModal('Change LAN settings?',
-        'If the router address changes you will need to reconnect at the new address, ' +
-        'and your computer may need to renew its DHCP lease.', 'Save', false).then(function (go) {
+        'If the router address changes, this page will automatically reconnect you at the new ' +
+        'address once the router is ready — your computer may still need to renew its DHCP lease ' +
+        'first if it can\'t get there.', 'Save', false).then(function (go) {
         if (!go) return;
         api('/lan', { method: 'POST', body: {
           ipaddr: $('#lan-ip').value, netmask: $('#lan-mask').value,
           dhcp_start: $('#lan-start').value, dhcp_limit: $('#lan-limit').value,
           dhcp_lease: $('#lan-lease').value, dhcp_enabled: $('#lan-dhcp').checked ? '1' : '0'
-        }}).then(function (r) { toast(r.message, 'ok'); }).catch(function (e) { toast(e.message, 'error'); });
+        }}).then(function (r) {
+          toast(r.message, 'ok');
+          if (r.redirect_url) redirectWhenReachable(r.redirect_url);
+        }).catch(function (e) { toast(e.message, 'error'); });
       });
     };
 
@@ -842,7 +1087,15 @@ views.wifi = function () {
 /* ======================= DNS ======================= */
 
 views.dns = function () {
-  api('/dns').then(function (r) {
+  Promise.all([api('/dns'), api('/adblock'), api('/blocklist'), api('/blocklist/adult'), api('/blocklist/games'), api('/nodes')])
+    .then(function (res) {
+    var r = res[0], ab = res[1], bl = res[2], adult = res[3], games = res[4], nodes = (res[5].nodes || []);
+    var nodeLinks = nodes.filter(function (n) { return n.admin_url; }).map(function (n) {
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;' +
+        'border-bottom:1px solid var(--border)"><span style="color:var(--text-dim)">' + esc(n.name) +
+        (n.ip ? ' <span class="mono">(' + esc(n.ip) + ')</span>' : '') + '</span>' +
+        '<a class="btn btn-sm" href="' + esc(n.admin_url) + '" target="_blank" rel="noopener">Open admin panel</a></div>';
+    }).join('');
     page('DNS', 'Resolvers used by every device on the LAN.',
       '<div class="alert alert-info"><strong>Why DNS is pinned centrally.</strong>' +
         'With three uplinks, letting each ISP inject its own resolvers would mean name resolution ' +
@@ -853,7 +1106,67 @@ views.dns = function () {
       '<textarea id="dns-list">' + esc((r.servers || []).join('\n')) + '</textarea></label>' +
       '<label class="switch"><input type="checkbox" id="dns-ignore"' + (r.ignore_isp_dns ? ' checked' : '') +
         '><span class="track"></span><span>Ignore DNS servers supplied by the ISPs</span></label>' +
-      '<button class="btn btn-primary" id="dns-save">Save DNS settings</button></div></div>');
+      '<button class="btn btn-primary" id="dns-save">Save DNS settings</button></div></div>' +
+      '<div class="card"><div class="card-head"><h3>Ad blocking</h3></div><div class="card-body">' +
+      '<label class="switch"><input type="checkbox" id="ab-enabled"' + (ab.enabled ? ' checked' : '') +
+        '><span class="track"></span><span>Block ads and trackers network-wide</span></label>' +
+      '<p class="hint" style="margin:10px 0">DNS-based blocking, network-wide, no app or per-device setup — ' +
+      'every device gets it automatically. This is the blocking engine only: no dashboard, no query history, ' +
+      'no per-device rules, deliberately, to keep it under 200 KB on a 16 MB router.</p>' +
+      '<div class="grid c3" style="gap:10px;margin-top:14px">' +
+      tile('Status', ab.status, '', ab.status === 'enabled' ? 'ok' : '') +
+      tile('Domains blocked', ab.blocked_domains, '', '') +
+      tile('Last update', ab.last_run, '', '') +
+      '</div></div></div>' +
+      '<div class="card"><div class="card-head"><h3>Website blocking</h3></div><div class="card-body">' +
+      '<label class="switch"><input type="checkbox" id="bl-enabled"' + (bl.enabled ? ' checked' : '') +
+        '><span class="track"></span><span>Enable custom blocklist</span></label>' +
+      '<p class="hint" style="margin:10px 0">Block specific sites by domain, network-wide, on top of the ' +
+      'ad/tracker feeds above. Blocking a domain here blocks it and every subdomain of it.</p>' +
+      '<div class="form-row"><label class="field" style="flex:1"><span>Domain</span>' +
+      '<input type="text" id="bl-domain" placeholder="example.com"></label>' +
+      '<button class="btn btn-primary" id="bl-add" style="align-self:flex-end">Block</button></div>' +
+      '<div class="tbl-wrap" style="margin-top:12px"><table><tbody id="bl-tbody">' +
+      (bl.domains || []).map(function (d) {
+        return '<tr><td class="mono">' + esc(d) + '</td><td style="width:1%;white-space:nowrap">' +
+          '<button class="btn btn-sm btn-ghost" data-del-bl="' + esc(d) + '">Remove</button></td></tr>';
+      }).join('') +
+      '</tbody></table></div>' +
+      ((bl.domains || []).length ? '' : '<p class="empty">No sites blocked yet.</p>') +
+      '</div></div>' +
+
+      '<div class="card"><div class="card-head"><h3>18+ content</h3></div><div class="card-body">' +
+      '<label class="switch"><input type="checkbox" id="cat-adult"' + (adult.enabled ? ' checked' : '') +
+        '><span class="track"></span><span>Block adult content network-wide</span></label>' +
+      '<p class="hint" style="margin-top:10px">One click, network-wide. Uses <code>oisd_nsfw_small</code>, a ' +
+      'curated adult-content DNS feed (~21,000 domains) already available through the ad-blocking engine above — ' +
+      'sized to actually run on this router, unlike the much larger raw lists some sites publish.</p>' +
+      '</div></div>' +
+
+      '<div class="card"><div class="card-head"><h3>Games</h3></div><div class="card-body">' +
+      '<label class="switch"><input type="checkbox" id="cat-games"' + (games.enabled ? ' checked' : '') +
+        '><span class="track"></span><span>Block gaming platforms network-wide</span></label>' +
+      '<p class="hint" style="margin:10px 0">There is no equivalent ready-made public list for this the way there ' +
+      'is for ads or adult content, so this is a starter list of common gaming platforms (Steam, Epic Games, ' +
+      'Roblox, Xbox Live, PlayStation, Nintendo, Battle.net, Twitch, and a few browser game sites) that turns on ' +
+      'when you enable this &mdash; edit it below like the custom list above.</p>' +
+      '<div class="form-row"><label class="field" style="flex:1"><span>Domain</span>' +
+      '<input type="text" id="cg-domain" placeholder="example.com"></label>' +
+      '<button class="btn btn-primary" id="cg-add" style="align-self:flex-end">Block</button></div>' +
+      '<div class="tbl-wrap" style="margin-top:12px"><table><tbody id="cg-tbody">' +
+      (games.domains || []).map(function (d) {
+        return '<tr><td class="mono">' + esc(d) + '</td><td style="width:1%;white-space:nowrap">' +
+          '<button class="btn btn-sm btn-ghost" data-del-cg="' + esc(d) + '">Remove</button></td></tr>';
+      }).join('') +
+      '</tbody></table></div>' +
+      ((games.domains || []).length ? '' : '<p class="empty">No sites blocked yet.</p>') +
+      '</div></div>' +
+
+      (nodeLinks ? '<div class="card"><div class="card-head"><h3>Downstream routers &amp; access points</h3></div>' +
+        '<div class="card-body">' +
+        '<p class="hint" style="margin-top:0">If a device on this list runs its own DHCP/DNS (common for a mesh ' +
+        'node or a second router), the blocking above only covers clients using this router\'s DNS directly &mdash; ' +
+        'open its own admin panel to apply the same blocking there.</p>' + nodeLinks + '</div></div>' : ''));
 
     $('#dns-save').onclick = function () {
       api('/dns', { method: 'POST', body: {
@@ -861,6 +1174,70 @@ views.dns = function () {
         ignore_isp_dns: $('#dns-ignore').checked ? '1' : '0'
       }}).then(function (r) { toast(r.message, 'ok'); }).catch(function (e) { toast(e.message, 'error'); });
     };
+
+    $('#bl-enabled').onchange = function () {
+      var cb = this;
+      cb.disabled = true;
+      api('/blocklist', { method: 'POST', body: { enabled: cb.checked ? '1' : '0' } })
+        .then(function (r) { toast(r.message, 'ok'); cb.disabled = false; })
+        .catch(function (e) { toast(e.message, 'error'); cb.checked = !cb.checked; cb.disabled = false; });
+    };
+
+    $('#bl-add').onclick = function () {
+      var d = $('#bl-domain').value.trim();
+      if (!d) return;
+      api('/blocklist/add', { method: 'POST', body: { domain: d } })
+        .then(function (r) { toast(r.message, 'ok'); views.dns(); })
+        .catch(function (e) { toast(e.message, 'error'); });
+    };
+
+    $$('[data-del-bl]').forEach(function (b) {
+      b.onclick = function () {
+        api('/blocklist/del', { method: 'POST', body: { domain: b.getAttribute('data-del-bl') } })
+          .then(function (r) { toast(r.message, 'ok'); views.dns(); })
+          .catch(function (e) { toast(e.message, 'error'); });
+      };
+    });
+
+    $('#ab-enabled').onchange = function () {
+      var cb = this;
+      cb.disabled = true;
+      api('/adblock', { method: 'POST', body: { enabled: cb.checked ? '1' : '0' } })
+        .then(function (r) { toast(r.message, 'ok'); setTimeout(views.dns, 1500); })
+        .catch(function (e) { toast(e.message, 'error'); cb.checked = !cb.checked; cb.disabled = false; });
+    };
+
+    $('#cat-adult').onchange = function () {
+      var cb = this;
+      cb.disabled = true;
+      api('/blocklist/adult', { method: 'POST', body: { enabled: cb.checked ? '1' : '0' } })
+        .then(function (r) { toast(r.message, 'ok'); setTimeout(views.dns, 1500); })
+        .catch(function (e) { toast(e.message, 'error'); cb.checked = !cb.checked; cb.disabled = false; });
+    };
+
+    $('#cat-games').onchange = function () {
+      var cb = this;
+      cb.disabled = true;
+      api('/blocklist/games', { method: 'POST', body: { enabled: cb.checked ? '1' : '0' } })
+        .then(function (r) { toast(r.message, 'ok'); views.dns(); })
+        .catch(function (e) { toast(e.message, 'error'); cb.checked = !cb.checked; cb.disabled = false; });
+    };
+
+    $('#cg-add').onclick = function () {
+      var d = $('#cg-domain').value.trim();
+      if (!d) return;
+      api('/blocklist/games/add', { method: 'POST', body: { domain: d } })
+        .then(function (r) { toast(r.message, 'ok'); views.dns(); })
+        .catch(function (e) { toast(e.message, 'error'); });
+    };
+
+    $$('[data-del-cg]').forEach(function (b) {
+      b.onclick = function () {
+        api('/blocklist/games/del', { method: 'POST', body: { domain: b.getAttribute('data-del-cg') } })
+          .then(function (r) { toast(r.message, 'ok'); views.dns(); })
+          .catch(function (e) { toast(e.message, 'error'); });
+      };
+    });
   }).catch(function (e) { toast(e.message, 'error'); });
 };
 
@@ -1056,12 +1433,13 @@ views.firewall = function () {
     $('#remote-save').onclick = function () {
       var on = $('#remote').checked;
       var go = on ? confirmModal('Expose the admin panel to the internet?',
-        '<p>This opens port ' + esc(location.port || '8080') + ' on all three WAN uplinks.</p>' +
+        '<p>This opens port ' + esc(r.admin_wan_port || '8443') + ' on all three WAN uplinks, forwarding to ' +
+        'this admin panel.</p>' +
         '<p style="margin-top:10px"><strong>Understand what this means:</strong></p>' +
         '<ul style="margin:8px 0 0 18px"><li>The login page becomes reachable by anyone on the internet.</li>' +
         '<li>Traffic is plain HTTP — your password is sent unencrypted.</li>' +
         '<li>This device has no rate limiting or intrusion detection beyond a one-second delay on failed logins.</li></ul>' +
-        '<p style="margin-top:10px">A WireGuard tunnel is a far safer way to reach this panel remotely.</p>',
+        '<p style="margin-top:10px">The <a href="#/remote">Remote Access</a> page\'s relay tunnel is a far safer way to reach this panel remotely.</p>',
         'I understand, expose it') : Promise.resolve(true);
 
       go.then(function (ok) {
@@ -1109,6 +1487,158 @@ views.vpn = function () {
   }).catch(function (e) { toast(e.message, 'error'); });
 };
 
+/* ======================= Remote Access ======================= */
+
+views.remote = function () {
+  Promise.all([api('/remote'), api('/firewall'), api('/status')]).then(function (results) {
+    var r = results[0], fw = results[1], st = results[2];
+    var adminPort = fw.admin_wan_port || '8443';
+    var wanRows = (st.wans || []).map(function (w) {
+      var priv = isPrivateIPv4(w.address);
+      var status = !w.address
+        ? '<span class="badge">no address</span>'
+        : priv === true
+          ? '<span class="badge warn">behind another NAT</span>'
+          : '<span class="badge ok">public — ready</span>';
+      var action = !w.address
+        ? '—'
+        : priv === true
+          ? 'Forward TCP port <b>' + esc(adminPort) + '</b> to <b>' + esc(w.address) + ':' + esc(adminPort) +
+            '</b> on whatever router/modem this WAN plugs into.'
+          : 'No extra setup needed — this address is already public.';
+      return '<tr><td>' + esc(w.name.toUpperCase()) + '</td>' +
+        '<td class="mono">' + esc(w.address || '—') + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td style="font-size:12.5px">' + action + '</td></tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">No WAN addresses known yet.</td></tr>';
+    page('Remote Access', 'Two ways to reach this admin panel over the internet.',
+      '<div class="alert alert-info"><strong>Method 1 — relay tunnel (below): </strong>outbound-only, ' +
+        'the router is never directly reachable, but needs a relay host and a one-time setup step there. ' +
+        '<strong>Method 2 — direct port forward (bottom of this page): </strong>simpler, no relay host, but ' +
+        'exposes this router directly to the internet and only works on a WAN with a real public IP.</div>' +
+      (r.installed ? '' : '<div class="alert alert-error">No SSH client is available on this device. ' +
+        'This should not happen on a normal install — check <code>logread</code>.</div>') +
+      '<div class="page-head" style="margin-top:22px"><h3>Method 1 — Relay tunnel</h3></div>' +
+      '<div class="alert alert-info"><strong>How this works.</strong> This router opens an outbound SSH ' +
+        'connection to a relay host you control (a VPS, or a shared hosting account with SSH access) and asks ' +
+        'it to forward one of its own loopback ports back to this admin panel. No inbound firewall rule is ' +
+        'opened on this router or on any WAN — the connection is entirely outbound. Making the relay host\'s ' +
+        'own web server proxy a public HTTPS address to that forwarded port is a separate, one-time step on ' +
+        'the relay host itself.</div>' +
+      '<div class="card"><div class="card-head"><h3>Status</h3></div><div class="card-body" id="remote-status">' +
+        '<span class="badge">checking…</span></div></div>' +
+      '<div class="card"><div class="card-head"><h3>Key pair</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin-top:0">Generated on this router and never leaves it. Paste the public ' +
+        'key into the relay host\'s <code>~/.ssh/authorized_keys</code>.</p>' +
+        '<button class="btn" id="remote-gen"' + (r.installed ? '' : ' disabled') + '>' +
+        (r.has_key ? 'Regenerate key pair' : 'Generate key pair') + '</button>' +
+        '<div style="margin-top:14px">' +
+        (r.public_key ? '<label class="field"><span>Public key</span><textarea readonly rows="3" ' +
+          'style="font-family:monospace;font-size:12px" onclick="this.select()">' + esc(r.public_key) +
+          '</textarea></label>' : '') +
+        '</div></div></div>' +
+      '<div class="card"><div class="card-head"><h3>Relay host</h3></div><div class="card-body">' +
+        '<div class="form-row">' + f('rm-host', 'Relay host', r.host || '') +
+          f('rm-user', 'SSH username', r.user || '') + '</div>' +
+        '<div class="form-row">' + f('rm-sshport', 'SSH port', r.ssh_port || '22') +
+          f('rm-remoteport', 'Remote (loopback) port', r.remote_port || '') + '</div>' +
+        '<label class="switch"><input type="checkbox" id="rm-enabled"' + (r.enabled ? ' checked' : '') +
+          (r.installed && r.has_key ? '' : ' disabled') + '><span class="track"></span>' +
+          '<span>Enable the relay tunnel</span></label>' +
+        '<button class="btn btn-primary" id="remote-save" style="margin-top:10px">Save</button>' +
+        '<p class="hint" style="margin-top:10px">The remote port is where the relay host will listen on its ' +
+        'own loopback (127.0.0.1) — pick anything 1024 or above that\'s free there. Its own web server then ' +
+        'needs to proxy a public HTTPS address to that port; this app cannot configure that side for you.</p>' +
+        '</div></div>' +
+
+      '<div class="page-head" style="margin-top:22px"><h3>Method 2 — Direct port forward</h3></div>' +
+      '<div class="card"><div class="card-head"><h3>Per-WAN setup needed</h3></div><div class="card-body tight">' +
+        '<div class="tbl-wrap"><table><thead><tr><th>WAN</th><th>Address</th><th>Status</th><th>What to do</th></tr></thead>' +
+        '<tbody>' + wanRows + '</tbody></table></div></div>' +
+        '<div class="card-body" style="border-top:1px solid var(--border)">' +
+        '<p class="hint" style="margin:0">A WAN showing <b>public — ready</b> forwards through this router alone, ' +
+        'nothing else to do. One showing <b>behind another NAT</b> means the address this router sees isn\'t the ' +
+        'real internet-facing one — there\'s another router/modem upstream (common with some ISP setups) that ' +
+        'needs its own port forward pointed at the address shown, before this router\'s own rule below can be ' +
+        'reached from outside at all.</p></div></div>' +
+      '<div class="card"><div class="card-body">' +
+        '<p class="hint" style="margin-top:0">No relay host needed, and nothing to configure off-router — but ' +
+        'this exposes the login page directly to the internet on plain HTTP, and only works at all if the WAN ' +
+        'you\'re reached on has a real public IP (won\'t work behind carrier-grade NAT).</p>' +
+        (fw.remote_admin
+          ? '<div class="alert alert-error"><strong>This admin panel is currently reachable from the internet.</strong> ' +
+            'Anyone who can reach your WAN address can attempt to log in.</div>'
+          : '<div class="alert alert-info">Currently LAN-only — the correct default.</div>') +
+        '<label class="switch"><input type="checkbox" id="pf-remote-enabled"' + (fw.remote_admin ? ' checked' : '') +
+          '><span class="track"></span><span>Allow administration from the internet</span></label>' +
+        '<button class="btn ' + (fw.remote_admin ? '' : 'btn-danger') + '" id="pf-remote-apply" style="margin-top:10px">Apply</button>' +
+        '<p class="hint" style="margin-top:10px">Pair this with <a href="#/ddns">Dynamic DNS</a> so the address ' +
+        'stays reachable by name as your WAN IP changes. Port forwards, DMZ, and UPnP live on the ' +
+        '<a href="#/firewall">Firewall</a> page.</p>' +
+        '</div></div>');
+
+    pollRemote();
+
+    $('#remote-gen').onclick = function () {
+      var go = r.has_key ? confirmModal('Regenerate the key pair?',
+        'The relay host\'s authorized_keys must be updated with the new public key, and the tunnel will need ' +
+        'to reconnect. Only do this if you intend to update the relay host right after.',
+        'Regenerate', true) : Promise.resolve(true);
+      go.then(function (ok) {
+        if (!ok) return;
+        api('/remote/keygen', { method: 'POST' }).then(function () {
+          toast('Key pair generated.', 'ok');
+          views.remote();
+        }).catch(function (e) { toast(e.message, 'error'); });
+      });
+    };
+
+    $('#remote-save').onclick = function () {
+      var on = $('#rm-enabled').checked;
+      var go = on ? confirmModal('Enable internet remote access?',
+        '<p>This starts an outbound tunnel from the router to <b>' + esc($('#rm-host').value) + '</b>. Whoever ' +
+        'controls that host — and anyone who reaches the public address it exposes — can attempt to reach ' +
+        'this admin panel\'s login page.</p>' +
+        '<p style="margin-top:10px"><strong>Understand what this means:</strong></p>' +
+        '<ul style="margin:8px 0 0 18px"><li>The router\'s own session login and CSRF protection still apply — ' +
+        'this does not bypass authentication.</li>' +
+        '<li>Protect the public URL with its own layer too (e.g. HTTP Basic Auth on the relay host).</li>' +
+        '<li>Disable this again from this page at any time to close the tunnel.</li></ul>',
+        'I understand, enable it') : Promise.resolve(true);
+
+      go.then(function (ok) {
+        if (!ok) { $('#rm-enabled').checked = false; return; }
+        api('/remote', { method: 'POST', body: {
+          enabled: on ? '1' : '0',
+          host: $('#rm-host').value, user: $('#rm-user').value,
+          ssh_port: $('#rm-sshport').value, remote_port: $('#rm-remoteport').value
+        }}).then(function (rr) { toast(rr.message, 'ok'); views.remote(); })
+          .catch(function (e) { toast(e.message, 'error'); });
+      });
+    };
+
+    $('#pf-remote-apply').onclick = function () {
+      var on = $('#pf-remote-enabled').checked;
+      var go = on ? confirmModal('Expose the admin panel to the internet?',
+        '<p>This opens port ' + esc(fw.admin_wan_port || '8443') + ' on all three WAN uplinks, forwarding to ' +
+        'this admin panel.</p>' +
+        '<p style="margin-top:10px"><strong>Understand what this means:</strong></p>' +
+        '<ul style="margin:8px 0 0 18px"><li>The login page becomes reachable by anyone on the internet.</li>' +
+        '<li>Traffic is plain HTTP — your password is sent unencrypted.</li>' +
+        '<li>This device has no rate limiting or intrusion detection beyond a one-second delay on failed logins.</li></ul>' +
+        '<p style="margin-top:10px">The relay tunnel above (Method 1) is a far safer way to reach this panel remotely.</p>',
+        'I understand, expose it') : Promise.resolve(true);
+
+      go.then(function (ok) {
+        if (!ok) { $('#pf-remote-enabled').checked = false; return; }
+        api('/firewall/settings', { method: 'POST', body: { remote_admin: on ? '1' : '0' } })
+          .then(function () { toast(on ? 'Remote access enabled.' : 'Remote access disabled.', on ? 'error' : 'ok'); views.remote(); })
+          .catch(function (e) { toast(e.message, 'error'); });
+      });
+    };
+  }).catch(function (e) { toast(e.message, 'error'); });
+};
+
 /* ======================= QoS ======================= */
 
 views.qos = function () {
@@ -1138,6 +1668,65 @@ views.qos = function () {
 };
 
 /* ======================= DDNS ======================= */
+
+views.alerts = function () {
+  api('/alerts').then(function (r) {
+    if (!r.installed) {
+      page('Alerts', 'Email notification when a WAN goes down.',
+        '<div class="alert alert-warn"><strong>msmtp is not installed.</strong>' +
+        'Set FEAT_ALERTS="1" in mwan.env and re-run 00-packages.sh, or install it manually, then reload this page.</div>');
+      return;
+    }
+    page('Alerts', 'Email notification when a WAN goes down.',
+      '<div class="alert alert-info"><strong>What triggers an email.</strong>' +
+        'This uses mwan3\'s own tracking verdict, not just whether a cable is plugged in — a WAN whose line ' +
+        'stays connected but whose upstream ISP has silently died still counts as down here, which is the ' +
+        'scenario that actually matters. Sending happens over TLS; the password is written to a temp file in ' +
+        'RAM only for the moment of sending, never kept on flash.</div>' +
+      '<div class="card"><div class="card-head"><h3>SMTP server</h3></div><div class="card-body">' +
+        '<div class="form-row">' + f('al-host', 'Server', r.smtp_host || '') + f('al-port', 'Port', r.smtp_port || '587') + '</div>' +
+        '<div class="form-row">' + f('al-user', 'Username', r.smtp_user || '') +
+        '<label class="field"><span>Password</span><input type="password" id="al-pass" placeholder="' +
+        (r.smtp_has_password ? 'unchanged' : 'not set') + '"></label></div>' +
+        '<div class="form-row">' + f('al-from', 'From address', r.smtp_from || '') + f('al-to', 'Send alerts to', r.alert_to || '') + '</div>' +
+        '<p class="hint">Gmail and most providers need an app-specific password here, not your normal account password — ' +
+        'your account\'s security settings will have an option to generate one.</p>' +
+        '</div></div>' +
+      '<div class="card"><div class="card-head"><h3>What to alert on</h3></div><div class="card-body">' +
+        '<label class="switch"><input type="checkbox" id="al-enabled"' + (r.enabled ? ' checked' : '') +
+        '><span class="track"></span><span>Enable email alerts</span></label>' +
+        '<label class="switch"><input type="checkbox" id="al-wan1"' + (r.alert_wan1_down ? ' checked' : '') +
+        '><span class="track"></span><span>WAN1 goes down (and recovers)</span></label>' +
+        '<label class="switch"><input type="checkbox" id="al-all"' + (r.alert_all_down ? ' checked' : '') +
+        '><span class="track"></span><span>Every uplink is down — no internet at all</span></label>' +
+        '<div style="margin-top:14px"><button class="btn btn-primary" id="al-save">Save alert settings</button> ' +
+        '<button class="btn btn-ghost" id="al-test">Send test email</button></div>' +
+        '</div></div>');
+
+    $('#al-save').onclick = function () {
+      var body = {
+        enabled: $('#al-enabled').checked ? '1' : '0',
+        smtp_host: $('#al-host').value, smtp_port: $('#al-port').value,
+        smtp_user: $('#al-user').value, smtp_from: $('#al-from').value,
+        alert_to: $('#al-to').value,
+        alert_wan1_down: $('#al-wan1').checked ? '1' : '0',
+        alert_all_down: $('#al-all').checked ? '1' : '0'
+      };
+      if ($('#al-pass').value) body.smtp_pass = $('#al-pass').value;
+      api('/alerts', { method: 'POST', body: body })
+        .then(function (r) { toast(r.message, 'ok'); }).catch(function (e) { toast(e.message, 'error'); });
+    };
+
+    $('#al-test').onclick = function () {
+      var btn = this;
+      btn.disabled = true; btn.textContent = 'Sending…';
+      api('/alerts/test', { method: 'POST' })
+        .then(function (r) { toast(r.message, 'ok'); })
+        .catch(function (e) { toast(e.message, 'error'); })
+        .finally(function () { btn.disabled = false; btn.textContent = 'Send test email'; });
+    };
+  }).catch(function (e) { toast(e.message, 'error'); });
+};
 
 views.ddns = function () {
   api('/ddns').then(function (r) {
@@ -1307,11 +1896,29 @@ views.mode = function () {
 /* ======================= system ======================= */
 
 views.system = function () {
-  api('/system').then(function (r) {
+  Promise.all([api('/system'), api('/update/check').catch(function (e) { return { error: e.message }; })])
+    .then(function (results) {
+    var r = results[0], u = results[1];
     page('System', 'Device information, credentials, and maintenance.',
       '<div class="card"><div class="card-head"><h3>Device</h3></div><div class="card-body">' +
         kv('Model', r.model) + kv('Board', r.board) + kv('Firmware', r.firmware) +
         kv('Free flash', r.flash_free) + kv('Uptime', fmtUptime(r.uptime_s)) + '</div></div>' +
+
+      '<div class="card"><div class="card-head"><h3>Software update</h3></div><div class="card-body" id="upd-body">' +
+        (u.error
+          ? '<p class="hint" style="margin-top:0">Could not check for updates: ' + esc(u.error) + '</p>'
+          : u.update_available
+            ? '<div class="alert alert-info">Version <b>' + esc(u.latest) + '</b> is available &mdash; you have <b>' +
+              esc(u.current) + '</b>.</div>'
+            : '<p class="hint" style="margin-top:0">Up to date (version ' + esc(u.current) + ').</p>') +
+        '<div class="btn-row" style="margin-top:10px">' +
+          '<button class="btn" id="upd-check">Check for updates</button>' +
+          (u.update_available ? '<button class="btn btn-primary" id="upd-apply">Install update</button>' : '') +
+        '</div>' +
+        '<div class="hint" id="upd-progress" style="margin-top:10px"></div>' +
+        '<p class="hint" style="margin-top:10px">Checks <code>github.com/mikaelbhai/MultiWAN</code> (main branch) ' +
+        'over HTTPS. Installing downloads every app file fresh, verifies each one, and only replaces the running ' +
+        'app if all of them check out &mdash; a failed check leaves the current install untouched.</p></div></div>' +
 
       '<div class="card"><div class="card-head"><h3>Identity and time</h3></div><div class="card-body">' +
         '<div class="form-row">' + f('sy-host', 'Hostname', r.hostname) + f('sy-tz', 'Timezone', r.timezone) + '</div>' +
@@ -1336,7 +1943,14 @@ views.system = function () {
       '<div class="card"><div class="card-head"><h3>Reboot</h3></div><div class="card-body">' +
         '<p class="hint" style="margin-top:0">The device is unreachable for about a minute. ' +
         'All connections through it drop.</p>' +
-        '<button class="btn btn-danger" id="sys-reboot">Reboot now</button></div></div>');
+        '<button class="btn btn-danger" id="sys-reboot">Reboot now</button></div></div>' +
+
+      '<div class="card"><div class="card-head"><h3>Full system settings</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin-top:0">This app covers multi-WAN, LAN, wireless, and failover. For ' +
+        'everything else OpenWrt exposes — package management, raw UCI, detailed diagnostics — use LuCI, ' +
+        'the router\'s built-in admin interface. Same login as this app.</p>' +
+        '<div class="btn-row"><a class="btn" href="http://' + esc(r.lan_ip) + '/" target="_blank" rel="noopener">Open LuCI</a></div>' +
+        '</div></div>');
 
     $('#sy-save').onclick = function () {
       api('/system', { method: 'POST', body: { hostname: $('#sy-host').value, timezone: $('#sy-tz').value } })
@@ -1361,8 +1975,46 @@ views.system = function () {
           .then(function (r) { toast(r.message, 'ok'); }).catch(function (e) { toast(e.message, 'error'); });
       });
     };
+
+    $('#upd-check').onclick = function () { views.system(); };
+
+    var updBtn = $('#upd-apply');
+    if (updBtn) updBtn.onclick = function () {
+      confirmModal('Install version ' + esc(u.latest) + '?',
+        'Downloads the update, replaces the app\'s files, and restarts the admin service. Takes about ' +
+        '15-30 seconds; this page briefly disconnects and reconnects on its own.', 'Install').then(function (go) {
+        if (!go) return;
+        updBtn.disabled = true;
+        $('#upd-progress').textContent = 'Starting…';
+        api('/update/apply', { method: 'POST' }).then(function () {
+          pollUpdate();
+        }).catch(function (e) { toast(e.message, 'error'); updBtn.disabled = false; });
+      });
+    };
   }).catch(function (e) { toast(e.message, 'error'); });
 };
+
+function pollUpdate() {
+  api('/update/status').then(function (j) {
+    var el = $('#upd-progress');
+    if (el) el.textContent =
+      j.status === 'running' ? 'Working: ' + j.step + '…' :
+      j.status === 'error'   ? 'Failed: ' + j.step :
+      j.status === 'done'    ? j.step : '';
+    if (j.status === 'running') {
+      setTimeout(pollUpdate, 1500);
+    } else if (j.status === 'done') {
+      toast('Update installed.', 'ok');
+      setTimeout(views.system, 800);
+    } else if (j.status === 'error') {
+      toast(j.step, 'error');
+      var btn = $('#upd-apply'); if (btn) btn.disabled = false;
+    }
+  }).catch(function () {
+    // The admin service is mid-restart — expected, keep polling.
+    setTimeout(pollUpdate, 1500);
+  });
+}
 
 /* ======================= boot ======================= */
 

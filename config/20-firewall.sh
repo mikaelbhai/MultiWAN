@@ -47,6 +47,11 @@ uci set firewall.$lanz.output='ACCEPT'
 uci set firewall.$lanz.forward='ACCEPT'
 uci -q delete firewall.$lanz.network || true
 uci add_list firewall.$lanz.network='lan'
+# lan_admin is the dedicated port-80 address for the admin UI (see
+# 10-network.sh), when ROUTER_HOSTNAME is set. Same zone as lan — this is
+# defence in depth on top of the bind-to-LAN-only address, not the only
+# control, exactly like the lan_admin/admin_ui_lan rule below for lan itself.
+[ -n "$(uci -q get network.lan_admin)" ] && uci add_list firewall.$lanz.network='lan_admin'
 
 # --- Zone: wan (all three uplinks) -------------------------------------------
 # One zone covering all three WANs. mwan3 decides which one carries traffic;
@@ -124,16 +129,31 @@ uci set firewall.admin_ui_lan.proto='tcp'
 uci set firewall.admin_ui_lan.dest_port="$ADMIN_PORT"
 uci set firewall.admin_ui_lan.target='ACCEPT'
 
-# Explicit, disabled, documented WAN rule. The admin UI toggles 'enabled' on
-# this section when you opt into remote access. Shipping it disabled-but-present
-# means the UI never has to synthesise firewall sections at runtime.
+# Explicit, disabled, documented WAN redirect. The admin UI toggles 'enabled'
+# on this section when you opt into remote access. Shipping it
+# disabled-but-present means the UI never has to synthesise firewall sections
+# at runtime.
+#
+# This MUST be a redirect (DNAT), not a plain ACCEPT rule: uhttpd.mwadmin
+# binds only to LAN_IPADDR:ADMIN_PORT (see package/init.d/mwadmin), never to
+# the WAN address or 0.0.0.0. A plain ACCEPT rule only permits the packet at
+# the firewall — it does not deliver it anywhere, because no socket is
+# listening on the WAN-facing address. The redirect rewrites the destination
+# to LAN_IPADDR:ADMIN_PORT so the existing LAN-bound uhttpd actually receives
+# it. It also uses a distinct external port (ADMIN_WAN_PORT) rather than
+# ADMIN_PORT itself, since routers commonly already have other port-forwards
+# occupying common numbers (8080 etc.) — reusing ADMIN_PORT here would either
+# collide with those or silently do nothing if they win priority.
 uci -q delete firewall.admin_ui_wan || true
-uci set firewall.admin_ui_wan='rule'
+uci set firewall.admin_ui_wan='redirect'
 uci set firewall.admin_ui_wan.name='MultiWAN-Admin-WAN-REMOTE-ACCESS'
+uci set firewall.admin_ui_wan.target='DNAT'
 uci set firewall.admin_ui_wan.src='wan'
+uci set firewall.admin_ui_wan.dest='lan'
 uci set firewall.admin_ui_wan.proto='tcp'
+uci set firewall.admin_ui_wan.src_dport="$ADMIN_WAN_PORT"
+uci set firewall.admin_ui_wan.dest_ip="$LAN_IPADDR"
 uci set firewall.admin_ui_wan.dest_port="$ADMIN_PORT"
-uci set firewall.admin_ui_wan.target='ACCEPT'
 uci set firewall.admin_ui_wan.enabled='0'
 
 # --- Block SSH and LuCI from WAN, explicitly ---------------------------------

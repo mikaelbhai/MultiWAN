@@ -61,7 +61,11 @@ Edit it and set your real static IP, netmask, gateway, and DNS before deploying.
 
     Say "Copying config scripts to /root/multiwan/config"
     ssh $Target "mkdir -p /root/multiwan/config"
-    scp -q (Join-Path $Repo "config\*") "${Target}:/root/multiwan/config/"
+    # -O forces the legacy SCP protocol. Modern OpenSSH (9.0+) defaults scp to
+    # SFTP, but this OpenWrt image ships no /usr/libexec/sftp-server, so a
+    # plain `scp` here fails with "scp: Connection closed" on any client from
+    # the last few years.
+    scp -O -q (Join-Path $Repo "config\*") "${Target}:/root/multiwan/config/"
     ssh $Target "chmod +x /root/multiwan/config/*.sh; sed -i 's/\r`$//' /root/multiwan/config/*"
     Write-Host "    Run it on the router with:" -ForegroundColor Green
     Write-Host "      ssh $Target 'cd /root/multiwan/config && sh install.sh'"
@@ -73,31 +77,44 @@ if (-not $ConfigOnly) {
 
     ssh $Target "mkdir -p /www/mwadmin/cgi-bin /usr/lib/mwadmin /etc/hotplug.d/iface"
 
-    scp -q -r (Join-Path $Repo "package\www\*")     "${Target}:/www/mwadmin/"
-    scp -q    (Join-Path $Repo "package\cgi-bin\mwadmin") "${Target}:/www/mwadmin/cgi-bin/"
-    scp -q    (Join-Path $Repo "package\lib\*.sh")  "${Target}:/usr/lib/mwadmin/"
-    scp -q    (Join-Path $Repo "package\hotplug\95-mwadmin-portdetect") "${Target}:/etc/hotplug.d/iface/"
-    scp -q    (Join-Path $Repo "package\init.d\mwadmin") "${Target}:/etc/init.d/"
+    scp -O -q -r (Join-Path $Repo "package\www\*")     "${Target}:/www/mwadmin/"
+    scp -O -q    (Join-Path $Repo "package\cgi-bin\mwadmin") "${Target}:/www/mwadmin/cgi-bin/"
+    scp -O -q    (Join-Path $Repo "package\lib\*.sh")  "${Target}:/usr/lib/mwadmin/"
+    scp -O -q    (Join-Path $Repo "package\hotplug\95-mwadmin-portdetect") "${Target}:/etc/hotplug.d/iface/"
+    scp -O -q    (Join-Path $Repo "package\init.d\mwadmin") "${Target}:/etc/init.d/"
+    scp -O -q    (Join-Path $Repo "package\init.d\mwremote") "${Target}:/etc/init.d/"
+    scp -O -q    (Join-Path $Repo "package\etc\mwan3.user") "${Target}:/etc/"
+
+    # Records what was just deployed, so the Updates page's "current version"
+    # always matches this working tree, not whatever was last pushed to GitHub.
+    ssh $Target "mkdir -p /etc/mwadmin"
+    scp -O -q (Join-Path $Repo "VERSION") "${Target}:/etc/mwadmin/version"
 
     Say "Normalising line endings and setting permissions"
     # Windows CRLF in a shell script produces the classic and very confusing
     # "/bin/sh^M: bad interpreter" failure, so strip them on arrival.
     ssh $Target @"
 set -e
-for f in /www/mwadmin/cgi-bin/mwadmin /usr/lib/mwadmin/*.sh /etc/hotplug.d/iface/95-mwadmin-portdetect /etc/init.d/mwadmin; do
+for f in /www/mwadmin/cgi-bin/mwadmin /usr/lib/mwadmin/*.sh /etc/hotplug.d/iface/95-mwadmin-portdetect /etc/init.d/mwadmin /etc/init.d/mwremote /etc/mwan3.user; do
     [ -f "`$f" ] && sed -i 's/\r`$//' "`$f"
 done
-chmod 755 /www/mwadmin/cgi-bin/mwadmin /etc/init.d/mwadmin /etc/hotplug.d/iface/95-mwadmin-portdetect
+chmod 755 /www/mwadmin/cgi-bin/mwadmin /etc/init.d/mwadmin /etc/init.d/mwremote /etc/hotplug.d/iface/95-mwadmin-portdetect /etc/mwan3.user
 chmod 644 /usr/lib/mwadmin/*.sh
 chmod 644 /www/mwadmin/*.html /www/mwadmin/*.css /www/mwadmin/*.js
 /etc/init.d/mwadmin enable
 /etc/init.d/mwadmin restart
+# mwremote is intentionally NOT enabled here — it stays off until the admin
+# app Remote Access page enables it, same opt-in posture as the WAN-exposure
+# firewall rule.
 "@
 
     Say "Verifying the service responds"
     $port = (Select-String -Path (Join-Path $Repo "config\mwan.env") -Pattern '^ADMIN_PORT="(\d+)"').Matches.Groups[1].Value
     if (-not $port) { $port = "8080" }
-    $probe = ssh $Target "wget -qO- http://127.0.0.1:$port/cgi-bin/mwadmin/ping 2>/dev/null"
+    # Deliberately NOT 127.0.0.1: uhttpd.mwadmin binds only to the LAN address
+    # (see package/init.d/mwadmin), never loopback, so a 127.0.0.1 check here
+    # always fails regardless of whether the service is actually healthy.
+    $probe = ssh $Target "wget -qO- http://${Router}:$port/cgi-bin/mwadmin/ping 2>/dev/null"
     if ($probe -match '"ok":true') {
         Write-Host "    API responded correctly." -ForegroundColor Green
     } else {

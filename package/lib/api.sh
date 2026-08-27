@@ -644,6 +644,246 @@ devices_emit() {
 }
 
 # ===========================================================================
+# NODES — downstream router/AP management, for the "Nodes & Networks" page.
+# ===========================================================================
+# A node is metadata this app owns about a specific device you've flagged as
+# a router or AP worth watching: a friendly name, what kind it is, and where
+# its own (vendor) admin panel lives. It is deliberately NOT a new kind of
+# network configuration — nothing here changes routing, firewalling, or
+# DHCP. Storage lives in the mwadmin uci config (same file as mwadmin.alerts)
+# as a lightweight bookmark-plus-live-status layer on top of devices this
+# router already sees via ARP/DHCP and nlbwmon, reusing exactly those same
+# mechanisms (see the DEVICES section above for how each one works).
+
+# A node's IP can legitimately change (DHCP renewal, a reservation made
+# elsewhere) — resolving it live from the same sources /devices uses, rather
+# than storing an IP that can go stale, is why nodes are keyed by MAC.
+node_ip_for_mac() {
+    local target; target=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    local _e _mac _ip _n _i
+    while read -r _e _mac _ip _n _i; do
+        [ "$(printf '%s' "$_mac" | tr 'A-Z' 'a-z')" = "$target" ] && { printf '%s' "$_ip"; return; }
+    done < /tmp/dhcp.leases 2>/dev/null
+    local _hw _flags _mask _dev
+    while read -r _ip _hw _flags _mac _mask _dev; do
+        [ "$_dev" = "br-lan" ] || continue
+        [ "$(printf '%s' "$_mac" | tr 'A-Z' 'a-z')" = "$target" ] && { printf '%s' "$_ip"; return; }
+    done < /proc/net/arp
+}
+
+api_nodes_get() {
+    NLBW_RAW=$(nlbw_snapshot)
+
+    LIVE_MACS=" "
+    local _e _mac _ip _n _i
+    while read -r _e _mac _ip _n _i; do
+        [ -n "$_mac" ] && LIVE_MACS="$LIVE_MACS$(printf '%s' "$_mac" | tr 'A-Z' 'a-z') "
+    done < /tmp/dhcp.leases 2>/dev/null
+    local _flags _dev
+    while read -r _ip _hw _flags _mac _mask _dev; do
+        [ "$_dev" = "br-lan" ] || continue
+        case "$_flags" in 0x0|"") continue ;; esac
+        case "$_mac" in ''|00:00:00:00:00:00) continue ;; esac
+        LIVE_MACS="$LIVE_MACS$(printf '%s' "$_mac" | tr 'A-Z' 'a-z') "
+    done < /proc/net/arp
+
+    # Own prev-sample file, separate from devices_emit's — /devices and
+    # /nodes can legitimately be polled in the same few seconds from two open
+    # tabs, and sharing one file would make each one's delta calculation
+    # consume samples meant for the other.
+    NOW=$(date +%s)
+    local prev_file="$MW_RUN/noderates.prev" new_state="" first=1
+    # Node presence is poll-driven, not event-driven like mwan3's WAN tracking
+    # — this is what turns "online flipped since last poll" into a real
+    # history event, same rotate-at-500 approach as package/etc/mwan3.user's
+    # WAN history.
+    local online_file="$MW_RUN/node_online.state" online_state_new=""
+
+    printf '{"ok":true,"nodes":['
+    local n
+    for n in $(uci show mwadmin 2>/dev/null | sed -n "s/^mwadmin\.\([a-z0-9_]*\)=node$/\1/p"); do
+        local name mac kind admin_url ip mac_l online down_mbps up_mbps
+        name=$(uget mwadmin.$n.name); mac=$(uget mwadmin.$n.mac)
+        kind=$(uget_d mwadmin.$n.kind other); admin_url=$(uget mwadmin.$n.admin_url)
+        mac_l=$(printf '%s' "$mac" | tr 'A-Z' 'a-z')
+        ip=$(node_ip_for_mac "$mac")
+
+        online=0
+        case "$LIVE_MACS" in *" $mac_l "*) online=1 ;; esac
+
+        local prev_online
+        prev_online=$(grep -i "^$mac_l " "$online_file" 2>/dev/null | head -n1 | awk '{print $2}')
+        if [ -n "$prev_online" ] && [ "$prev_online" != "$online" ]; then
+            local hdir="$MW_STATE/history" hf
+            mkdir -p "$hdir" 2>/dev/null
+            hf="$hdir/nodes.log"
+            printf '%s|%s|%s|%s\n' "$NOW" "$mac" "$name" "$([ "$online" = "1" ] && echo up || echo down)" >> "$hf"
+            if [ "$(wc -l < "$hf" 2>/dev/null)" -gt 500 ] 2>/dev/null; then
+                tail -n 500 "$hf" > "$hf.tmp" && mv "$hf.tmp" "$hf"
+            fi
+        fi
+        online_state_new="$online_state_new$mac_l $online
+"
+
+        down_mbps="null"; up_mbps="null"
+        if [ "$online" = "1" ]; then
+            local rx tx
+            set -- $(nlbw_bytes_for_mac "$mac")
+            rx="${1:-0}"; tx="${2:-0}"
+            local prev_line
+            prev_line=$(grep -i "^$mac_l " "$prev_file" 2>/dev/null | head -n1)
+            if [ -n "$prev_line" ]; then
+                local prx ptx pt dt
+                set -- $prev_line
+                prx="$2"; ptx="$3"; pt="$4"
+                dt=$((NOW - pt))
+                if [ "$dt" -gt 0 ] && [ "$rx" -ge "$prx" ] && [ "$tx" -ge "$ptx" ]; then
+                    down_mbps=$(awk -v a="$rx" -v b="$prx" -v t="$dt" 'BEGIN{printf "%.2f", (a-b)*8/t/1000000}')
+                    up_mbps=$(awk -v a="$tx" -v b="$ptx" -v t="$dt" 'BEGIN{printf "%.2f", (a-b)*8/t/1000000}')
+                fi
+            fi
+            new_state="$new_state$mac_l $rx $tx $NOW
+"
+        fi
+
+        [ -z "$admin_url" ] && [ -n "$ip" ] && admin_url="http://$ip/"
+
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '{%s,%s,%s,%s,%s,%s,%s,"down_mbps":%s,"up_mbps":%s}' \
+            "$(jstr id "$n")" "$(jstr name "$name")" "$(jstr mac "$mac")" \
+            "$(jstr kind "$kind")" "$(jstr ip "${ip:-}")" "$(jstr admin_url "$admin_url")" \
+            "$(jbool online "$online")" "$down_mbps" "$up_mbps"
+    done
+    printf '%s' "$new_state" > "$prev_file"
+    printf '%s' "$online_state_new" > "$online_file"
+    printf ']}\n'
+}
+
+api_nodes_add() {
+    local name mac kind admin_url
+    name=$(bodyval name); mac=$(bodyval mac); kind=$(bodyval kind); admin_url=$(bodyval admin_url)
+
+    case "$mac" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+        *) json_error "Invalid MAC address (expected aa:bb:cc:dd:ee:ff)."; return ;;
+    esac
+    case "$name" in ''|*[!a-zA-Z0-9_" "-]*) json_error "Name may contain only letters, digits, space, hyphen and underscore."; return ;; esac
+    case "$kind" in router|ap|other) ;; *) kind=other ;; esac
+    if [ -n "$admin_url" ]; then
+        case "$admin_url" in
+            http://*|https://*) ;;
+            *) json_error "Admin panel URL must start with http:// or https://"; return ;;
+        esac
+    fi
+
+    local sect; sect="node_$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')"
+    uci set mwadmin.$sect='node'
+    uci set mwadmin.$sect.name="$name"
+    uci set mwadmin.$sect.mac="$mac"
+    uci set mwadmin.$sect.kind="$kind"
+    if [ -n "$admin_url" ]; then uci set mwadmin.$sect.admin_url="$admin_url"; else uci -q delete mwadmin.$sect.admin_url; fi
+    uci commit mwadmin
+    log "node added: $name ($mac)"
+    json_ok "$(jstr message 'Node added.')"
+}
+
+api_nodes_del() {
+    local id; id=$(bodyval id)
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid node id."; return ;; esac
+    [ "$(uget mwadmin.$id)" = "node" ] || { json_error "No such node."; return; }
+    uci -q delete mwadmin.$id
+    uci commit mwadmin
+    json_ok "$(jstr message 'Node removed.')"
+}
+
+# ---------------------------------------------------------------------------
+# Node speed test — latency/loss, not throughput.
+# ---------------------------------------------------------------------------
+# Real down/up throughput to an arbitrary LAN device would need that device
+# to run something like iperf3 — unrealistic for a stock TP-Link/mesh AP with
+# unknown firmware. Latency, loss, and jitter are honest, useful signals any
+# IP-reachable device can answer, with nothing installed on the node itself.
+# Same fire-and-forget background-job shape as api_port_test / portdetect.sh:
+# start returns immediately, the browser polls the result endpoint.
+api_node_test_start() {
+    local id ip mac name
+    id=$(bodyval id)
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid node id."; return ;; esac
+    [ "$(uget mwadmin.$id)" = "node" ] || { json_error "No such node."; return; }
+    mac=$(uget mwadmin.$id.mac); name=$(uget mwadmin.$id.name)
+    ip=$(node_ip_for_mac "$mac")
+    valid_ipv4 "$ip" || { json_error "$name has no known IP right now — it may be offline."; return; }
+
+    # This is a best-effort fast rejection only — the real lock is acquired
+    # inside the detached process below, so the pid it records is the
+    # long-running one, not this short-lived CGI process (which would make
+    # lock_acquire's stale-lock reaping immediately reclaim it on the very
+    # next request).
+    [ -d "$MW_RUN/locks/nodetest_$id.lock" ] && { json_error "A test is already running for this node."; return; }
+    mkdir -p "$MW_RUN/nodetest"
+    local rf="$MW_RUN/nodetest/$id.json"
+    printf '{"status":"running","ip":"%s"}\n' "$(json_escape "$ip")" > "$rf"
+
+    ( setsid sh -c '
+        . /usr/lib/mwadmin/common.sh
+        lock_acquire "nodetest_'"$id"'" || exit 0
+        out=$(ping -c 6 -W 1 -q "$1" 2>&1)
+        avg=$(printf "%s" "$out" | awk -F"/" "/^(round-trip|rtt)/ {printf \"%.1f\", \$5}")
+        loss=$(printf "%s" "$out" | sed -n "s/.*, \([0-9]*\)% packet loss.*/\1/p")
+        [ -z "$avg" ] && avg=null
+        [ -z "$loss" ] && loss=null
+        printf "{\"status\":\"done\",\"ip\":\"%s\",\"avg_ms\":%s,\"loss_pct\":%s,\"tested_at\":%s}\n" \
+            "$1" "$avg" "$loss" "$(date +%s)" > "$2"
+        lock_release "nodetest_'"$id"'"
+    ' _ "$ip" "$rf" >/dev/null 2>&1 & ) &
+
+    json_ok "$(jstr message 'Test started.')"
+}
+
+api_node_test_result() {
+    local id; id=$(qsval id)
+    case "$id" in ''|*[!a-z0-9_]*) json_error "Invalid node id."; return ;; esac
+    if [ -f "$MW_RUN/nodetest/$id.json" ]; then
+        cat "$MW_RUN/nodetest/$id.json"
+    else
+        printf '{"status":"never_run"}\n'
+    fi
+}
+
+# Merges WAN history (package/etc/mwan3.user, event-driven) and node history
+# (api_nodes_get, poll-driven) into one feed for the "line and node
+# online/offline reporting" panel. Both files are "timestamp|...|event" —
+# newest first, capped, so the UI never has to paginate a file that could in
+# principle grow across weeks of uptime.
+api_history_get() {
+    local limit; limit=$(qsval limit); valid_int "$limit" || limit=100
+    [ "$limit" -gt 500 ] && limit=500
+
+    printf '{"ok":true,"events":['
+    {
+        [ -f "$MW_STATE/history/wan.log" ] && while IFS='|' read -r ts iface event; do
+            [ -z "$ts" ] && continue
+            printf '%s|%s|%s|%s|%s\n' "$ts" wan "$iface" "$(printf '%s' "$iface" | tr 'a-z' 'A-Z')" "$event"
+        done < "$MW_STATE/history/wan.log"
+        [ -f "$MW_STATE/history/nodes.log" ] && while IFS='|' read -r ts mac name event; do
+            [ -z "$ts" ] && continue
+            printf '%s|%s|%s|%s|%s\n' "$ts" node "$mac" "$name" "$event"
+        done < "$MW_STATE/history/nodes.log"
+    } | sort -rn | head -n "$limit" | {
+        local first=1 ts kind id label event
+        while IFS='|' read -r ts kind id label event; do
+            [ $first -eq 0 ] && printf ','
+            first=0
+            printf '{%s,%s,%s,%s,%s}' \
+                "$(jnum ts "$ts")" "$(jstr kind "$kind")" "$(jstr id "$id")" \
+                "$(jstr label "$label")" "$(jstr event "$event")"
+        done
+    }
+    printf ']}\n'
+}
+
+# ===========================================================================
 # BANDWIDTH
 # ===========================================================================
 api_bandwidth() {
@@ -664,13 +904,14 @@ api_bandwidth() {
 # LAN / DHCP
 # ===========================================================================
 api_lan_get() {
-    printf '{"ok":true,%s,%s,%s,%s,%s,%s}\n' \
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s}\n' \
         "$(jstr ipaddr "$(uget network.lan.ipaddr)")" \
         "$(jstr netmask "$(uget network.lan.netmask)")" \
         "$(jstr dhcp_start "$(uget dhcp.lan.start)")" \
         "$(jstr dhcp_limit "$(uget dhcp.lan.limit)")" \
         "$(jstr dhcp_lease "$(uget dhcp.lan.leasetime)")" \
-        "$(jbool dhcp_enabled "$([ "$(uget dhcp.lan.ignore)" = "1" ] && echo 0 || echo 1)")"
+        "$(jbool dhcp_enabled "$([ "$(uget dhcp.lan.ignore)" = "1" ] && echo 0 || echo 1)")" \
+        "$(jstr hostname_alias "$(uget dhcp.mwadmin_alias.name)")"
 }
 
 api_lan_set() {
@@ -685,6 +926,22 @@ api_lan_set() {
     valid_int "$limit" || { json_error "DHCP limit must be a number."; return; }
     case "$lease" in ''|*[!0-9hmd]*) json_error "Invalid lease time (use e.g. 12h)."; return ;; esac
 
+    # Changing the address or netmask itself is the only part of this form
+    # that can lock the browser out (wrong DHCP pool size doesn't). That gets
+    # the same snapshot/apply/confirm-or-revert safety net the AP/Router mode
+    # switch already uses, rather than shipping this form with no way back
+    # from a typo.
+    local old_ip old_mask address_changed=0
+    old_ip=$(uget network.lan.ipaddr); old_mask=$(uget network.lan.netmask)
+    [ "$ip" != "$old_ip" ] || [ "$mask" != "$old_mask" ] && address_changed=1
+
+    if [ "$address_changed" = "1" ] && [ "$(sh /usr/lib/mwadmin/modeswitch.sh rollback-pending)" = "1" ]; then
+        json_error "A previous network change is still waiting for confirmation. Confirm or wait for it to finish before changing the LAN address again."
+        return
+    fi
+
+    [ "$address_changed" = "1" ] && sh /usr/lib/mwadmin/modeswitch.sh save-profile lan-rollback
+
     uci set network.lan.ipaddr="$ip"
     uci set network.lan.netmask="$mask"
     uci set dhcp.lan.start="$start"
@@ -693,7 +950,42 @@ api_lan_set() {
     if [ "$enabled" = "0" ]; then uci set dhcp.lan.ignore='1'; else uci -q delete dhcp.lan.ignore; fi
     uci commit network; uci commit dhcp
 
-    json_ok "$(jstr message "Saved. If the LAN address changed, reconnect at http://$ip:$(uget uhttpd.mwadmin.listen_http | cut -d: -f2)")"
+    # listen_http is a uci list; once the port-80 alias exists it holds two
+    # "ip:port" entries space-separated on one line, so a blind `cut -d:`
+    # across the whole thing no longer isolates one port. Read the configured
+    # port directly instead (same source mwadmin's init script uses).
+    local port; port=$(uget_d mwadmin.@main[0].port 8080)
+    local alias_host; alias_host=$(uget dhcp.mwadmin_alias.name)
+    local alias_ip;   alias_ip=$(uget dhcp.mwadmin_alias.ip)
+    local reconnect_at redirect_url
+    if [ -n "$alias_host" ]; then
+        # Compared against the pre-change LAN address: at this point in the
+        # request the async network reload hasn't run yet, so alias_ip is
+        # still whatever it was before this save (either mirroring the old
+        # LAN IP directly, or a separate dedicated port-80 address).
+        if [ "$alias_ip" = "$old_ip" ]; then
+            # No dedicated port-80 alias configured — the hostname still needs
+            # the app's port.
+            reconnect_at="http://$alias_host:$port (or http://$ip:$port)"
+            redirect_url="http://$alias_host:$port"
+        else
+            reconnect_at="http://$alias_host (or http://$ip:$port)"
+            redirect_url="http://$alias_host"
+        fi
+    else
+        reconnect_at="http://$ip:$port"
+        redirect_url="http://$ip:$port"
+    fi
+
+    if [ "$address_changed" = "1" ]; then
+        sh /usr/lib/mwadmin/modeswitch.sh arm lan-rollback
+        json_ok "$(printf '%s,%s,%s' \
+            "$(jnum rollback_seconds 90)" \
+            "$(jstr redirect_url "$redirect_url")" \
+            "$(jstr message "Saved. Reconnecting to $reconnect_at — confirm there within 90 seconds, or the router reverts to the previous LAN settings automatically.")")"
+    else
+        json_ok "$(jstr message "Saved.")"
+    fi
     ( sleep 2; /etc/init.d/network reload; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
 }
 
@@ -932,6 +1224,12 @@ api_fw_get() {
     printf '{"ok":true,"forwards":['
     local first=1 s
     for s in $(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([a-z0-9_]*\)=redirect$/\1/p"); do
+        # admin_ui_wan is managed exclusively by the Remote Access page's own
+        # toggle (remote_admin below), not the generic port-forward list —
+        # listing it here too would let it be edited/deleted from two places,
+        # and the generic delete button doesn't know it needs the Remote
+        # Access page's warning-before-enabling treatment.
+        [ "$s" = "admin_ui_wan" ] && continue
         [ $first -eq 0 ] && printf ','
         first=0
         printf '{%s,%s,%s,%s,%s,%s,%s}' \
@@ -947,7 +1245,8 @@ api_fw_get() {
     printf '%s,' "$(jstr dmz_host "$(uget firewall.dmz_host.dest_ip)")"
     printf '%s,' "$(jbool sw_offload "$(uget_d firewall.@defaults[0].flow_offloading 0)")"
     printf '%s,' "$(jbool hw_offload "$(uget_d firewall.@defaults[0].flow_offloading_hw 0)")"
-    printf '%s'  "$(jbool remote_admin "$([ "$(uget firewall.admin_ui_wan.enabled)" = "1" ] && echo 1 || echo 0)")"
+    printf '%s,' "$(jbool remote_admin "$([ "$(uget firewall.admin_ui_wan.enabled)" = "1" ] && echo 1 || echo 0)")"
+    printf '%s'  "$(jstr admin_wan_port "$(uget firewall.admin_ui_wan.src_dport)")"
     printf '}\n'
 }
 
@@ -1068,6 +1367,254 @@ api_dns_set() {
     json_ok "$(jstr message 'DNS settings saved.')"
 }
 
+api_adblock_get() {
+    local f="/var/run/adblock/adblock.runtime.json" enabled status domains lastrun
+    enabled=$(uget_d adblock.global.adb_enabled 0)
+    if [ -f "$f" ]; then
+        status=$(sed -n 's/.*"adblock_status": *"\([^"]*\)".*/\1/p' "$f")
+        domains=$(sed -n 's/.*"blocked_domains": *"\([^"]*\)".*/\1/p' "$f")
+        lastrun=$(sed -n 's/.*"last_run": *"\([^"]*\)".*/\1/p' "$f")
+    fi
+    printf '{"ok":true,%s,%s,%s,%s}\n' \
+        "$(jbool enabled "$enabled")" \
+        "$(jstr status "${status:-unknown}")" \
+        "$(jstr blocked_domains "${domains:-0}")" \
+        "$(jstr last_run "${lastrun:--}")"
+}
+
+api_adblock_set() {
+    local enabled; enabled=$(bodyval enabled)
+    uci set adblock.global.adb_enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit adblock
+    if [ "$enabled" = "1" ]; then
+        /etc/init.d/adblock enable >/dev/null 2>&1
+        # start IS the fetch-and-load run — adblock.sh is a procd-managed
+        # instance, not a standalone CLI tool, so there is no separate
+        # "-f force fetch" call to make on top of this. Confirmed by testing:
+        # a bare `adblock.sh -f` silently did nothing, while `start` reliably
+        # produces a real run within ~10s.
+        /etc/init.d/adblock start >/dev/null 2>&1
+    else
+        /etc/init.d/adblock stop >/dev/null 2>&1
+    fi
+    log "adblock $([ "$enabled" = "1" ] && echo enabled || echo disabled)"
+    json_ok "$(jstr message "Ad blocking $([ "$enabled" = "1" ] && echo "enabled — the first blocklist fetch is running now, this can take a minute" || echo "disabled").")"
+}
+
+# ===========================================================================
+# CUSTOM BLOCKLIST — specific sites, on top of adblock's ad/tracker feeds.
+# ===========================================================================
+# adblock (above) is a big third-party feed; this is a short, user-owned list
+# of specific domains ("I want facebook.com blocked on this network"),
+# authoritative copy kept in uci (mwadmin.blocklist.domain, a plain list),
+# rendered into a delimited block inside /etc/dnsmasq.conf — the one plain
+# config file OpenWrt's dnsmasq init script always includes verbatim for the
+# default instance, so no uci "confdir" plumbing is needed. The BEGIN/END
+# markers mean this can be regenerated from scratch every time without
+# touching anything a human (or another feature) put in that file by hand.
+blocklist_regenerate() {
+    local f="/etc/dnsmasq.conf" tmp="/tmp/dnsmasq.conf.new" enabled games_enabled d
+    enabled=$(uget_d mwadmin.blocklist.enabled 1)
+    games_enabled=$(uget_d mwadmin.blocklist.games_enabled 0)
+    awk '
+        /^### mwadmin-blocklist BEGIN/ { skip=1 }
+        /^### mwadmin-blocklist END/   { skip=0; next }
+        !skip
+    ' "$f" 2>/dev/null > "$tmp"
+    if [ "$enabled" = "1" ] || [ "$games_enabled" = "1" ]; then
+        {
+            echo '### mwadmin-blocklist BEGIN — managed by the admin UI, do not edit by hand ###'
+            if [ "$enabled" = "1" ]; then
+                for d in $(uci -q get mwadmin.blocklist.domain 2>/dev/null); do
+                    echo "address=/$d/0.0.0.0"
+                done
+            fi
+            if [ "$games_enabled" = "1" ]; then
+                for d in $(uci -q get mwadmin.blocklist.games_domain 2>/dev/null); do
+                    echo "address=/$d/0.0.0.0"
+                done
+            fi
+            echo '### mwadmin-blocklist END ###'
+        } >> "$tmp"
+    fi
+    mv "$tmp" "$f"
+}
+
+# A starter set of well-known gaming platforms/services — not sourced from any
+# third-party feed (no reputable, embedded-sized public "block video games"
+# list exists the way ad/porn/gambling ones do; the closest adblock.feeds
+# entry, games_tracking, blocks in-game telemetry, not the platforms
+# themselves). Ships as an editable starting point via the same add/remove
+# endpoints as the custom list, not a claim of completeness.
+GAMES_DEFAULT_DOMAINS="store.steampowered.com steamcommunity.com steamcontent.com
+epicgames.com store.epicgames.com
+roblox.com rbxcdn.com
+xboxlive.com xbox.com
+playstation.net playstation.com
+nintendo.net nintendo.com
+battle.net blizzard.com
+riotgames.com leagueoflegends.com valorant.com
+ea.com origin.com
+ubisoft.com ubi.com
+itch.io
+twitch.tv
+miniclip.com
+poki.com
+coolmathgames.com
+kongregate.com
+crazygames.com
+y8.com"
+
+api_blocklist_get() {
+    printf '{"ok":true,%s,"domains":[' "$(jbool enabled "$(uget_d mwadmin.blocklist.enabled 1)")"
+    local first=1 d
+    for d in $(uci -q get mwadmin.blocklist.domain 2>/dev/null); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '"%s"' "$(json_escape "$d")"
+    done
+    printf ']}\n'
+}
+
+api_blocklist_add() {
+    local domain; domain=$(bodyval domain)
+    domain=$(printf '%s' "$domain" | tr 'A-Z' 'a-z')
+    valid_host "$domain" || { json_error "Invalid domain — letters, digits, dots, and hyphens only."; return; }
+    case "$domain" in *.*) ;; *) json_error "Enter a real domain, e.g. example.com."; return ;; esac
+
+    local existing
+    for existing in $(uci -q get mwadmin.blocklist.domain 2>/dev/null); do
+        [ "$existing" = "$domain" ] && { json_error "$domain is already blocked."; return; }
+    done
+
+    uci set mwadmin.blocklist='blocklist'
+    uci add_list mwadmin.blocklist.domain="$domain"
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    log "blocklist: added $domain"
+    json_ok "$(jstr message "$domain blocked.")"
+}
+
+api_blocklist_del() {
+    local domain; domain=$(bodyval domain)
+    [ -z "$domain" ] && { json_error "No domain given."; return; }
+    uci del_list mwadmin.blocklist.domain="$domain" 2>/dev/null
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    log "blocklist: removed $domain"
+    json_ok "$(jstr message "$domain unblocked.")"
+}
+
+api_blocklist_set() {
+    local enabled; enabled=$(bodyval enabled)
+    uci set mwadmin.blocklist='blocklist'
+    uci set mwadmin.blocklist.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    json_ok "$(jstr message "Custom blocklist $([ "$enabled" = "1" ] && echo enabled || echo disabled).")"
+}
+
+# ===========================================================================
+# CATEGORY BLOCKING — one-click "18+ content" and "games" toggles.
+# ===========================================================================
+# 18+ content reuses the already-installed adblock package: oisd_nsfw_small
+# is a real, size-appropriate (~21k domains / ~300KB) curated adult-content
+# feed already listed in /etc/adblock/adblock.feeds — adding/removing it from
+# adblock.global.adb_feed is the whole toggle, and adblock's own proven
+# fetch/apply path (already running stevenblack_direct + hagezi_light on this
+# router) does the rest. This deliberately does NOT use raw hosts-format
+# feeds like blocklistproject's porn.txt directly (confirmed live: ~950k
+# domains, 26MB raw) — far too large for this router's RAM/flash and a real
+# crash risk, unlike oisd's small variant which is sized for embedded use.
+api_blocklist_adult_get() {
+    local list; list=$(uci -q get adblock.global.adb_feed 2>/dev/null)
+    local enabled=0 f
+    for f in $list; do [ "$f" = "oisd_nsfw_small" ] && enabled=1; done
+    printf '{"ok":true,%s}\n' "$(jbool enabled "$enabled")"
+}
+
+api_blocklist_adult_set() {
+    local enabled; enabled=$(bodyval enabled)
+    local list; list=$(uci -q get adblock.global.adb_feed 2>/dev/null)
+    uci -q delete adblock.global.adb_feed 2>/dev/null
+    local f had=0
+    for f in $list; do
+        [ "$f" = "oisd_nsfw_small" ] && { had=1; continue; }
+        uci add_list adblock.global.adb_feed="$f"
+    done
+    [ "$enabled" = "1" ] && uci add_list adblock.global.adb_feed='oisd_nsfw_small'
+    uci commit adblock
+    if [ "$enabled" = "1" ] || [ "$had" = "1" ]; then
+        /etc/init.d/adblock enable >/dev/null 2>&1
+        /etc/init.d/adblock start >/dev/null 2>&1
+    fi
+    log "18+ content blocking $([ "$enabled" = "1" ] && echo enabled || echo disabled)"
+    json_ok "$(jstr message "18+ content blocking $([ "$enabled" = "1" ] && echo "enabled — the blocklist fetch is running now, this can take a minute" || echo "disabled").")"
+}
+
+# Games uses the same mechanism as the general custom blocklist (a short,
+# small list rendered straight into dnsmasq.conf), not adblock — there is no
+# appropriately-sized public feed for "gaming platforms" (see the note by
+# GAMES_DEFAULT_DOMAINS above). First enable seeds the starter list so the
+# toggle does something useful immediately; it is then just an editable list
+# like the custom blocklist.
+api_blocklist_games_get() {
+    printf '{"ok":true,%s,"domains":[' "$(jbool enabled "$(uget_d mwadmin.blocklist.games_enabled 0)")"
+    local first=1 d
+    for d in $(uci -q get mwadmin.blocklist.games_domain 2>/dev/null); do
+        [ $first -eq 0 ] && printf ','
+        first=0
+        printf '"%s"' "$(json_escape "$d")"
+    done
+    printf ']}\n'
+}
+
+api_blocklist_games_set() {
+    local enabled; enabled=$(bodyval enabled)
+    uci set mwadmin.blocklist='blocklist'
+    if [ "$enabled" = "1" ] && [ -z "$(uci -q get mwadmin.blocklist.games_domain 2>/dev/null)" ]; then
+        local d
+        for d in $GAMES_DEFAULT_DOMAINS; do
+            uci add_list mwadmin.blocklist.games_domain="$d"
+        done
+    fi
+    uci set mwadmin.blocklist.games_enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    json_ok "$(jstr message "Games blocking $([ "$enabled" = "1" ] && echo enabled || echo disabled).")"
+}
+
+api_blocklist_games_add() {
+    local domain; domain=$(bodyval domain)
+    domain=$(printf '%s' "$domain" | tr 'A-Z' 'a-z')
+    valid_host "$domain" || { json_error "Invalid domain — letters, digits, dots, and hyphens only."; return; }
+    case "$domain" in *.*) ;; *) json_error "Enter a real domain, e.g. example.com."; return ;; esac
+    local existing
+    for existing in $(uci -q get mwadmin.blocklist.games_domain 2>/dev/null); do
+        [ "$existing" = "$domain" ] && { json_error "$domain is already blocked."; return; }
+    done
+    uci set mwadmin.blocklist='blocklist'
+    uci add_list mwadmin.blocklist.games_domain="$domain"
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    json_ok "$(jstr message "$domain blocked.")"
+}
+
+api_blocklist_games_del() {
+    local domain; domain=$(bodyval domain)
+    [ -z "$domain" ] && { json_error "No domain given."; return; }
+    uci del_list mwadmin.blocklist.games_domain="$domain" 2>/dev/null
+    uci commit mwadmin
+    blocklist_regenerate
+    ( sleep 1; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+    json_ok "$(jstr message "$domain unblocked.")"
+}
+
 api_ddns_get() {
     printf '{"ok":true,"services":['
     local first=1 s
@@ -1106,6 +1653,68 @@ api_ddns_set() {
     uci commit ddns
     /etc/init.d/ddns restart >/dev/null 2>&1
     json_ok "$(jstr message 'DDNS configuration saved.')"
+}
+
+# ===========================================================================
+# ALERTS — email on WAN outage, via msmtp + /etc/mwan3.user.
+# ===========================================================================
+api_alerts_get() {
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s}\n' \
+        "$(jbool installed "$(command -v msmtp >/dev/null 2>&1 && echo 1 || echo 0)")" \
+        "$(jbool enabled "$(uget_d mwadmin.alerts.enabled 0)")" \
+        "$(jstr smtp_host "$(uget mwadmin.alerts.smtp_host)")" \
+        "$(jstr smtp_port "$(uget_d mwadmin.alerts.smtp_port 587)")" \
+        "$(jstr smtp_user "$(uget mwadmin.alerts.smtp_user)")" \
+        "$(jbool smtp_has_password "$([ -n "$(uget mwadmin.alerts.smtp_pass)" ] && echo 1 || echo 0)")" \
+        "$(jstr smtp_from "$(uget mwadmin.alerts.smtp_from)")" \
+        "$(jstr alert_to "$(uget mwadmin.alerts.alert_to)")" \
+        "$(jbool alert_wan1_down "$(uget_d mwadmin.alerts.alert_wan1_down 1)")" \
+        "$(jbool alert_all_down "$(uget_d mwadmin.alerts.alert_all_down 1)")"
+}
+
+api_alerts_set() {
+    local enabled host port user pass from to a1 aall
+    enabled=$(bodyval enabled); host=$(bodyval smtp_host); port=$(bodyval smtp_port)
+    user=$(bodyval smtp_user); pass=$(bodyval smtp_pass); from=$(bodyval smtp_from)
+    to=$(bodyval alert_to); a1=$(bodyval alert_wan1_down); aall=$(bodyval alert_all_down)
+
+    if [ "$enabled" = "1" ]; then
+        command -v msmtp >/dev/null 2>&1 || { json_error "msmtp is not installed. Enable FEAT_ALERTS in mwan.env and re-run 00-packages.sh."; return; }
+        [ -n "$host" ] || { json_error "SMTP server is required."; return; }
+        [ -n "$user" ] || { json_error "SMTP username is required."; return; }
+        [ -n "$from" ] || { json_error "\"From\" address is required."; return; }
+        valid_host "$to" || { json_error "A valid alert-to address is required."; return; }
+        valid_int "$port" || { json_error "Port must be a number."; return; }
+    fi
+
+    uci set mwadmin.alerts='alerts'
+    uci set mwadmin.alerts.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    [ -n "$host" ] && uci set mwadmin.alerts.smtp_host="$host"
+    [ -n "$port" ] && uci set mwadmin.alerts.smtp_port="$port"
+    [ -n "$user" ] && uci set mwadmin.alerts.smtp_user="$user"
+    [ -n "$pass" ] && uci set mwadmin.alerts.smtp_pass="$pass"
+    [ -n "$from" ] && uci set mwadmin.alerts.smtp_from="$from"
+    [ -n "$to" ]   && uci set mwadmin.alerts.alert_to="$to"
+    uci set mwadmin.alerts.alert_wan1_down="$([ "$a1" = "0" ] && echo 0 || echo 1)"
+    uci set mwadmin.alerts.alert_all_down="$([ "$aall" = "0" ] && echo 0 || echo 1)"
+    uci commit mwadmin
+
+    chmod 755 /etc/mwan3.user 2>/dev/null
+    log "alerts configuration saved (enabled=$enabled)"
+    json_ok "$(jstr message 'Alert settings saved.')"
+}
+
+api_alerts_test() {
+    command -v msmtp >/dev/null 2>&1 || { json_error "msmtp is not installed."; return; }
+    [ "$(uget_d mwadmin.alerts.enabled 0)" = "1" ] || { json_error "Save and enable alerts before sending a test."; return; }
+    if /usr/lib/mwadmin/send_alert.sh "Test alert" \
+        "This is a test message from the MultiWAN admin panel. If you received this, outage alerts are configured correctly." \
+        >/tmp/alert-test.log 2>&1
+    then
+        json_ok "$(jstr message 'Test email sent. Check the inbox — and spam folder — for the alert-to address.')"
+    else
+        json_error "Send failed: $(tail -1 /tmp/msmtp-lastrun.log 2>/dev/null || echo 'see logread for details')"
+    fi
 }
 
 api_qos_get() {
@@ -1293,6 +1902,246 @@ api_wg_keygen() {
 }
 
 # ===========================================================================
+# REMOTE ACCESS — outbound SSH relay tunnel for internet admin access.
+# ===========================================================================
+# This router never accepts an inbound connection from the internet. Instead
+# it opens an outbound SSH connection to a relay host you control (a VPS, a
+# shared hosting account with SSH — anything that accepts SSH and permits
+# AllowTcpForwarding) and asks it to forward one of its own loopback ports
+# back to this router's admin UI. Public HTTPS termination and the reverse
+# proxy from a real domain to that loopback port happen on the relay host,
+# outside this app's control — see the admin UI's Remote Access page for the
+# exact steps. package/init.d/mwremote is what actually runs the tunnel;
+# this section only manages configuration, key material, and status.
+#
+# The private key is generated on-router and never leaves it — api_remote_
+# keygen writes it straight to flash and returns only the public half.
+# Pasting that public key into the relay host's authorized_keys is the one
+# manual step this app cannot do for you.
+REMOTE_KEYFILE="$MW_STATE/remote_id_ed25519"
+
+# Ties the history-offload cron job (package/lib/history_offload.sh) to
+# whether a relay host is actually enabled — no relay, no point running it,
+# and it already no-ops safely on its own if run with nothing configured, but
+# not scheduling it at all is one less wakeup on a device this constrained.
+sync_offload_cron() {
+    local want="$1" f="/etc/crontabs/root"
+    local line='*/30 * * * * /usr/lib/mwadmin/history_offload.sh'
+    touch "$f" 2>/dev/null
+    if [ "$want" = "1" ]; then
+        grep -qF 'history_offload.sh' "$f" 2>/dev/null || {
+            echo "$line" >> "$f"
+            /etc/init.d/cron restart >/dev/null 2>&1
+        }
+    else
+        if grep -qF 'history_offload.sh' "$f" 2>/dev/null; then
+            grep -vF 'history_offload.sh' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+            /etc/init.d/cron restart >/dev/null 2>&1
+        fi
+    fi
+}
+
+api_remote_get() {
+    local installed=0
+    command -v ssh >/dev/null 2>&1 && installed=1
+    local pubkey=""
+    [ -f "$REMOTE_KEYFILE.pub" ] && pubkey=$(cat "$REMOTE_KEYFILE.pub" 2>/dev/null)
+
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s,%s}\n' \
+        "$(jbool installed "$installed")" \
+        "$(jbool has_key "$([ -n "$pubkey" ] && echo 1 || echo 0)")" \
+        "$(jbool enabled "$(uget_d mwadmin.remote.enabled 0)")" \
+        "$(jstr host "$(uget mwadmin.remote.host)")" \
+        "$(jstr user "$(uget mwadmin.remote.user)")" \
+        "$(jstr ssh_port "$(uget_d mwadmin.remote.ssh_port 22)")" \
+        "$(jstr remote_port "$(uget mwadmin.remote.remote_port)")" \
+        "$(jstr public_key "$pubkey")"
+}
+
+api_remote_set() {
+    local enabled host user ssh_port remote_port
+    enabled=$(bodyval enabled); host=$(bodyval host); user=$(bodyval user)
+    ssh_port=$(bodyval ssh_port); remote_port=$(bodyval remote_port)
+    [ -z "$ssh_port" ] && ssh_port=22
+
+    if [ "$enabled" = "1" ]; then
+        command -v ssh >/dev/null 2>&1 || { json_error "ssh client not available on this device."; return; }
+        [ -f "$REMOTE_KEYFILE" ] || { json_error "Generate a key before enabling remote access."; return; }
+        valid_host "$host" || { json_error "Invalid relay host."; return; }
+        case "$user" in ''|*[!a-zA-Z0-9_-]*) json_error "Invalid relay username."; return ;; esac
+        valid_int "$ssh_port" || { json_error "SSH port must be a number."; return; }
+        valid_int "$remote_port" || { json_error "Remote (loopback) port must be a number."; return; }
+        [ "$remote_port" -ge 1024 ] 2>/dev/null || { json_error "Remote port must be 1024 or higher — most relay hosts don't allow a regular user to bind privileged ports."; return; }
+    fi
+
+    uci set mwadmin.remote='remote'
+    uci set mwadmin.remote.enabled="$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    [ -n "$host" ] && uci set mwadmin.remote.host="$host"
+    [ -n "$user" ] && uci set mwadmin.remote.user="$user"
+    uci set mwadmin.remote.ssh_port="$ssh_port"
+    [ -n "$remote_port" ] && uci set mwadmin.remote.remote_port="$remote_port"
+    uci commit mwadmin
+    log "remote access settings saved (enabled=$enabled)"
+
+    if [ "$enabled" = "1" ]; then
+        ( sleep 1; /etc/init.d/mwremote enable; /etc/init.d/mwremote restart ) >/dev/null 2>&1 &
+    else
+        ( sleep 1; /etc/init.d/mwremote stop; /etc/init.d/mwremote disable ) >/dev/null 2>&1 &
+    fi
+    sync_offload_cron "$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    json_ok "$(jstr message 'Remote access settings saved.')"
+}
+
+api_remote_keygen() {
+    command -v ssh-keygen >/dev/null 2>&1 || { json_error "ssh client not available on this device."; return; }
+    mkdir -p "$MW_STATE"
+    rm -f "$REMOTE_KEYFILE" "$REMOTE_KEYFILE.pub"
+    ssh-keygen -t ed25519 -N '' -C "mwadmin-$(uget system.@system[0].hostname)" -f "$REMOTE_KEYFILE" >/dev/null 2>&1
+    if [ ! -f "$REMOTE_KEYFILE.pub" ]; then
+        json_error "Key generation failed."
+        return
+    fi
+    chmod 600 "$REMOTE_KEYFILE"
+    log "remote access key (re)generated"
+    json_ok "$(jstr public_key "$(cat "$REMOTE_KEYFILE.pub")")"
+}
+
+# Reports whether the tunnel process procd is supervising is actually alive,
+# and roughly how long it's been up — the pidfile's own mtime is close enough
+# for "since" without parsing /proc/<pid>/stat for an exact start time.
+api_remote_status() {
+    local running=0 since="null" pidfile="/var/run/mwremote.pid"
+    if [ -f "$pidfile" ]; then
+        local pid; pid=$(cat "$pidfile" 2>/dev/null)
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            running=1
+            since=$(stat -c %Y "$pidfile" 2>/dev/null)
+            [ -z "$since" ] && since="null"
+        fi
+    fi
+    printf '{"ok":true,%s,%s,%s}\n' \
+        "$(jbool enabled "$(uget_d mwadmin.remote.enabled 0)")" \
+        "$(jbool running "$running")" \
+        "$(jnum since "$since")"
+}
+
+# ===========================================================================
+# UPDATES — check the project's public GitHub repo for a newer version and
+# apply it in place, from the Easy and Advanced UIs alike.
+# ===========================================================================
+# Sourced from GitHub, not the relay host: this router's ca-certificates
+# bundle verifies github.com/raw.githubusercontent.com fine (confirmed
+# live), but fails to validate mikaelbhai.com's certificate chain — using
+# GitHub sidesteps that entirely and needs no separate hosting upkeep.
+UPDATE_RAW_BASE="https://raw.githubusercontent.com/mikaelbhai/MultiWAN/main"
+UPDATE_VERSION_FILE="$MW_STATE/version"
+UPDATE_STATUS_FILE="$MW_RUN/update_status.json"
+
+# repo-path:router-path pairs, one per shipped file — kept in exact sync
+# with deploy.sh/deploy.ps1's own copy list, since an update is "what
+# deploy.sh would copy," fetched over HTTPS one file at a time instead of
+# over SSH. A colon can't appear in either half (paths, not URLs).
+UPDATE_FILES='package/www/index.html:/www/mwadmin/index.html
+package/www/advanced.html:/www/mwadmin/advanced.html
+package/www/app.js:/www/mwadmin/app.js
+package/www/app.css:/www/mwadmin/app.css
+package/www/simple.js:/www/mwadmin/simple.js
+package/www/simple.css:/www/mwadmin/simple.css
+package/cgi-bin/mwadmin:/www/mwadmin/cgi-bin/mwadmin
+package/lib/api.sh:/usr/lib/mwadmin/api.sh
+package/lib/common.sh:/usr/lib/mwadmin/common.sh
+package/lib/modeswitch.sh:/usr/lib/mwadmin/modeswitch.sh
+package/lib/portdetect.sh:/usr/lib/mwadmin/portdetect.sh
+package/lib/send_alert.sh:/usr/lib/mwadmin/send_alert.sh
+package/lib/history_offload.sh:/usr/lib/mwadmin/history_offload.sh
+package/hotplug/95-mwadmin-portdetect:/etc/hotplug.d/iface/95-mwadmin-portdetect
+package/init.d/mwadmin:/etc/init.d/mwadmin
+package/init.d/mwremote:/etc/init.d/mwremote
+package/etc/mwan3.user:/etc/mwan3.user'
+
+api_update_check() {
+    local current latest
+    current=$(cat "$UPDATE_VERSION_FILE" 2>/dev/null)
+    [ -z "$current" ] && current="unknown"
+    latest=$(curl -fsS -m 10 "$UPDATE_RAW_BASE/VERSION" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$latest" ]; then
+        json_error "Could not reach GitHub to check for updates."
+        return
+    fi
+    printf '{"ok":true,%s,%s,%s}\n' \
+        "$(jstr current "$current")" "$(jstr latest "$latest")" \
+        "$(jbool update_available "$([ "$current" != "$latest" ] && echo 1 || echo 0)")"
+}
+
+# Downloads every shipped file to a scratch dir on tmpfs, verifies each one
+# (non-empty, and shell scripts must pass `sh -n`) and only THEN copies them
+# over the real, running files — so a network hiccup or a bad file mid-way
+# leaves the installed app completely untouched rather than half-updated.
+# Runs detached (same reasoning as api_node_test_start: the lock must be
+# held by the long-running process, not this short-lived CGI request).
+api_update_apply() {
+    [ -d "$MW_RUN/locks/update.lock" ] && { json_error "An update is already in progress."; return; }
+    mkdir -p "$MW_RUN"
+    printf '{"status":"running","step":"starting"}\n' > "$UPDATE_STATUS_FILE"
+
+    ( setsid sh -c '
+        . /usr/lib/mwadmin/common.sh
+        lock_acquire "update" || exit 0
+        raw_base="$1"; version_file="$2"; status_file="$3"; files="$4"
+        stage="'"$MW_RUN"'/update_stage"
+        rm -rf "$stage"; mkdir -p "$stage"
+        status() { printf "{\"status\":\"%s\",\"step\":\"%s\"}\n" "$1" "$2" > "$status_file"; }
+
+        status running downloading
+        if ! printf "%s\n" "$files" | while IFS=: read -r repo_path router_path; do
+            [ -z "$repo_path" ] && continue
+            dest="$stage/$(basename "$router_path")"
+            curl -fsS -m 20 "$raw_base/$repo_path" -o "$dest" || exit 1
+            [ -s "$dest" ] || exit 1
+        done; then
+            status error "download failed - nothing was changed"
+            lock_release "update"; exit 0
+        fi
+
+        status running verifying
+        bad=0
+        for f in "$stage"/*.sh "$stage"/mwadmin "$stage"/mwremote "$stage"/mwan3.user "$stage"/95-mwadmin-portdetect; do
+            [ -f "$f" ] || continue
+            sh -n "$f" 2>/dev/null || bad=1
+        done
+        if [ "$bad" = 1 ]; then
+            status error "a downloaded file failed a syntax check - nothing was changed"
+            lock_release "update"; exit 0
+        fi
+
+        status running installing
+        printf "%s\n" "$files" | while IFS=: read -r repo_path router_path; do
+            [ -z "$repo_path" ] && continue
+            src="$stage/$(basename "$router_path")"
+            [ -f "$src" ] && cp -f "$src" "$router_path"
+        done
+        chmod 755 /www/mwadmin/cgi-bin/mwadmin /etc/init.d/mwadmin /etc/init.d/mwremote \
+            /etc/hotplug.d/iface/95-mwadmin-portdetect /etc/mwan3.user 2>/dev/null
+        chmod 644 /usr/lib/mwadmin/*.sh /www/mwadmin/*.html /www/mwadmin/*.css /www/mwadmin/*.js 2>/dev/null
+
+        latest=$(curl -fsS -m 10 "$raw_base/VERSION" 2>/dev/null | tr -d "[:space:]")
+        [ -n "$latest" ] && printf "%s\n" "$latest" > "$version_file"
+
+        rm -rf "$stage"
+        status running restarting
+        /etc/init.d/mwadmin restart >/dev/null 2>&1
+        status done "applied ${latest:-update}"
+        lock_release "update"
+    ' _ "$UPDATE_RAW_BASE" "$UPDATE_VERSION_FILE" "$UPDATE_STATUS_FILE" "$UPDATE_FILES" >/dev/null 2>&1 & ) &
+
+    json_ok "$(jstr message 'Update started.')"
+}
+
+api_update_status() {
+    [ -f "$UPDATE_STATUS_FILE" ] && cat "$UPDATE_STATUS_FILE" || printf '{"status":"idle"}\n'
+}
+
+# ===========================================================================
 # DIAGNOSTICS
 # ===========================================================================
 api_diag_ping() {
@@ -1333,14 +2182,19 @@ api_syslog() {
 # SYSTEM
 # ===========================================================================
 api_system_get() {
-    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s}\n' \
+    # LuCI always lives on the primary LAN address, port 80 — which is not
+    # necessarily the address this admin UI was itself reached on (it may be
+    # the dedicated :80 alias, or the ROUTER_HOSTNAME, or the :8080 port).
+    # The frontend needs the real one to link to it correctly.
+    printf '{"ok":true,%s,%s,%s,%s,%s,%s,%s,%s}\n' \
         "$(jstr hostname "$(uget system.@system[0].hostname)")" \
         "$(jstr timezone "$(uget system.@system[0].zonename)")" \
         "$(jstr model "$(cat /tmp/sysinfo/model 2>/dev/null)")" \
         "$(jstr board "$(cat /tmp/sysinfo/board_name 2>/dev/null)")" \
         "$(jstr firmware "$(. /etc/openwrt_release; echo "$DISTRIB_DESCRIPTION")")" \
         "$(jstr flash_free "$(df -h /overlay 2>/dev/null | awk 'NR==2{print $4}')")" \
-        "$(jnum uptime_s "$(awk '{printf "%d", $1}' /proc/uptime)")"
+        "$(jnum uptime_s "$(awk '{printf "%d", $1}' /proc/uptime)")" \
+        "$(jstr lan_ip "$(uget network.lan.ipaddr)")"
 }
 
 api_system_set() {
@@ -1418,6 +2272,12 @@ api_dispatch() {
         /ports/test:POST)         api_port_test ;;
         /bandwidth:GET)           api_bandwidth ;;
         /devices:GET)             api_devices ;;
+        /nodes:GET)               api_nodes_get ;;
+        /nodes/add:POST)          api_nodes_add ;;
+        /nodes/del:POST)          api_nodes_del ;;
+        /nodes/test:POST)         api_node_test_start ;;
+        /nodes/test:GET)          api_node_test_result ;;
+        /history:GET)             api_history_get ;;
 
         /mwan:GET)                api_mwan_get ;;
         /mwan/mode:POST)          api_mwan_mode_set ;;
@@ -1443,12 +2303,35 @@ api_dispatch() {
 
         /dns:GET)                 api_dns_get ;;
         /dns:POST)                api_dns_set ;;
+        /adblock:GET)             api_adblock_get ;;
+        /adblock:POST)            api_adblock_set ;;
+        /blocklist:GET)           api_blocklist_get ;;
+        /blocklist:POST)          api_blocklist_set ;;
+        /blocklist/add:POST)      api_blocklist_add ;;
+        /blocklist/del:POST)      api_blocklist_del ;;
+        /blocklist/adult:GET)     api_blocklist_adult_get ;;
+        /blocklist/adult:POST)    api_blocklist_adult_set ;;
+        /blocklist/games:GET)     api_blocklist_games_get ;;
+        /blocklist/games:POST)    api_blocklist_games_set ;;
+        /blocklist/games/add:POST) api_blocklist_games_add ;;
+        /blocklist/games/del:POST) api_blocklist_games_del ;;
         /ddns:GET)                api_ddns_get ;;
         /ddns:POST)               api_ddns_set ;;
+        /alerts:GET)              api_alerts_get ;;
+        /alerts:POST)             api_alerts_set ;;
+        /alerts/test:POST)        api_alerts_test ;;
         /qos:GET)                 api_qos_get ;;
         /qos:POST)                api_qos_set ;;
         /wireguard:GET)           api_wg_get ;;
         /wireguard/keygen:POST)   api_wg_keygen ;;
+        /remote:GET)              api_remote_get ;;
+        /remote:POST)             api_remote_set ;;
+        /remote/keygen:POST)      api_remote_keygen ;;
+        /remote/status:GET)       api_remote_status ;;
+
+        /update/check:GET)        api_update_check ;;
+        /update/apply:POST)       api_update_apply ;;
+        /update/status:GET)       api_update_status ;;
 
         /diag/ping:POST)          api_diag_ping ;;
         /diag/traceroute:POST)    api_diag_traceroute ;;

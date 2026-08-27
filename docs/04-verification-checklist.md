@@ -215,6 +215,52 @@ you made cable changes.
 
 ---
 
+## 9a. Remote Access (outbound relay tunnel)
+
+See [`docs/06-remote-access-relay.md`](06-remote-access-relay.md) for the full setup (this is the
+one feature in this app with a manual, off-router step).
+
+- [ ] **Generate a key pair** from the Remote Access page. Confirm the public key is shown and a
+      private key file now exists on flash (`ls /etc/mwadmin/remote_id_ed25519*` over SSH).
+- [ ] Paste the public key into the relay host's `~/.ssh/authorized_keys`.
+- [ ] Fill in relay host, SSH username, SSH port, and remote port; **enable** the tunnel.
+- [ ] **Pass:** the Status card reads **connected** within ~10 seconds, and `ps | grep "ssh -N"`
+      on the router shows the tunnel process.
+- [ ] Confirm `uci get firewall.admin_ui_wan.enabled` is still `0` — this feature must never
+      flip it.
+- [ ] From a network that is NOT this LAN (e.g. phone on mobile data), reach the public URL the
+      relay host serves and confirm you land on the admin login page.
+- [ ] **Failover survival:** fail WAN1 over to WAN2 (see §7) and confirm the tunnel reconnects on
+      its own within a minute — procd respawns it regardless of which WAN currently carries
+      traffic.
+- [ ] **Disable it** from the page and confirm the tunnel process exits and the public URL stops
+      responding.
+
+---
+
+## 9b. Nodes & Networks — reachability test, history, content blocking
+
+- [ ] **Node speed test:** on Nodes & Networks, add a node that's currently online, click **Test**
+      next to it. **Pass:** within ~10 seconds the cell shows an `ms` figure (green if 0% loss,
+      amber if partial loss, red/"no reply" if the node didn't answer at all).
+- [ ] **Recent activity:** still on that page, confirm the "Recent activity" table exists (may be
+      empty on a fresh install — that's correct, it only fills in as real WAN/node transitions
+      happen over time).
+- [ ] **WAN history really logs:** temporarily disable WAN2 or WAN3 (Firewall/WAN page, not
+      WAN1 — don't interrupt your primary uplink for this test) and wait for mwan3 to mark it
+      offline, then re-enable it. **Pass:** both a "went offline" and "came online" row for that
+      WAN appear in Recent activity within a minute of each event.
+- [ ] **Content blocking:** on the DNS page, add a domain to the custom blocklist (e.g.
+      `doubleclick.net`). **Pass:** `nslookup doubleclick.net <router LAN IP>` from a LAN client
+      now returns `0.0.0.0`. Remove it again and confirm resolution returns to normal.
+- [ ] **History offload (only if Remote Access/Method 1 is enabled):** check
+      `crontab -l` on the router lists `history_offload.sh`; after ~30 minutes (or run it by hand:
+      `sh /usr/lib/mwadmin/history_offload.sh`), confirm `~/mwadmin-history/` exists on the relay
+      host with non-empty log files, and that the router's own `/etc/mwadmin/history/*.log` files
+      got truncated back down afterward.
+
+---
+
 ## 10. Access Point mode — including the rollback safety net
 
 Do these in order. **Test 10a deliberately triggers the rollback**, which is the most important
@@ -293,7 +339,9 @@ NAT.
 - [ ] Free RAM still above 50 MB
 - [ ] Admin password changed from any default
 - [ ] Wi-Fi passwords changed from the `CHANGEME` placeholders
-- [ ] Remote admin access **disabled**
+- [ ] Remote admin access (direct WAN exposure) **disabled**
+- [ ] Remote Access relay tunnel: either genuinely in use with Basic Auth configured on the
+      relay host, or disabled — not left on with no protection beyond the router login page
 - [ ] Stock partition dumps (`radio`, `config`) archived off-device
 - [ ] A current config backup stored somewhere other than the router
 

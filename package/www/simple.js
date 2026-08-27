@@ -304,6 +304,7 @@ $('#ez-ports-save').addEventListener('click', function () {
 
 var wifiIds = []; /* the wifi-iface ids sharing the main SSID (2.4GHz + 5GHz) */
 var wifiHidden = false;
+var radioIds = []; /* the wifi-device ids (radio0, radio1) — toggled together for on/off */
 
 $('#ez-key-show').addEventListener('click', function () {
   var f = $('#ez-key');
@@ -330,8 +331,35 @@ function loadWifi() {
        blank and is only sent on save if the user actually types something. */
     $('#ez-key').value = '';
     $('#ez-key').placeholder = 'Leave blank to keep the current password';
+
+    radioIds = (j.radios || []).map(function (r) { return r.id; });
+    // Wi-Fi is "on" if at least one radio is enabled — if either radio is
+    // still broadcasting, the network is up from a user's point of view.
+    var anyOn = (j.radios || []).some(function (r) { return !r.disabled; });
+    $('#ez-wifi-onoff').classList.toggle('on', anyOn);
+    // Editing SSID/password only makes sense with the radios on — hide that
+    // part of the form rather than let you configure a network that isn't
+    // broadcasting, which reads as "I saved it but nothing changed."
+    $('#ez-wifi-fields').hidden = !anyOn;
   });
 }
+
+$('#ez-wifi-onoff').addEventListener('click', function () {
+  var sw = this;
+  var turnOn = !sw.classList.contains('on');
+  sw.disabled = true;
+  Promise.all(radioIds.map(function (id) {
+    return api('/wifi/radio', { method: 'POST', body: { id: id, disabled: turnOn ? '0' : '1' } });
+  })).then(function () {
+    toast(turnOn ? 'Wi-Fi turned on.' : 'Wi-Fi turned off.', 'ok');
+    sw.classList.toggle('on', turnOn);
+    $('#ez-wifi-fields').hidden = !turnOn;
+  }).catch(function (e) {
+    toast(e.message, 'error');
+  }).finally(function () {
+    sw.disabled = false;
+  });
+});
 
 $('#ez-wifi-save').addEventListener('click', function () {
   var ssid = $('#ez-ssid').value.trim();
@@ -366,7 +394,99 @@ function loadAll() {
   loadMwan().catch(function (e) { toast(e.message, 'error'); });
   loadPorts().catch(function (e) { toast(e.message, 'error'); });
   loadWifi().catch(function (e) { toast(e.message, 'error'); });
+  loadAdblock().catch(function (e) { toast(e.message, 'error'); });
+  checkUpdate().catch(function () {});
 }
+
+/* ======================= software update ======================= */
+/* Checks this project's public GitHub repo for a newer version and, if
+   found, can fetch + install it directly onto the router. See app.js for
+   the identical Advanced-page version of this — same API, same flow. */
+
+var updateLatest = null;
+
+function checkUpdate() {
+  return api('/update/check').then(function (j) {
+    if (j.update_available) {
+      updateLatest = j.latest;
+      $('#ez-update-sub').textContent = 'Version ' + j.latest + ' is available (you have ' + j.current + ').';
+      $('#ez-update-apply').hidden = false;
+    } else {
+      $('#ez-update-sub').textContent = 'Up to date (version ' + j.current + ').';
+      $('#ez-update-apply').hidden = true;
+    }
+  }).catch(function (e) {
+    $('#ez-update-sub').textContent = 'Could not check for updates: ' + e.message;
+  });
+}
+
+$('#ez-update-check').addEventListener('click', function () {
+  $('#ez-update-sub').textContent = 'Checking…';
+  checkUpdate();
+});
+
+$('#ez-update-apply').addEventListener('click', function () {
+  if (!window.confirm(
+    'Install version ' + (updateLatest || '') + '?\n\n' +
+    'This downloads the update, replaces the app\'s files, and restarts the admin service. ' +
+    'It takes about 15-30 seconds; this page will briefly disconnect and then work again.'
+  )) return;
+
+  var btn = $('#ez-update-apply');
+  btn.disabled = true;
+  $('#ez-update-progress').hidden = false;
+  $('#ez-update-progress').textContent = 'Starting…';
+
+  api('/update/apply', { method: 'POST' }).then(function () {
+    pollUpdate();
+  }).catch(function (e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+  });
+});
+
+function pollUpdate() {
+  api('/update/status').then(function (j) {
+    $('#ez-update-progress').textContent =
+      j.status === 'running' ? 'Working: ' + j.step + '…' :
+      j.status === 'error'   ? 'Failed: ' + j.step :
+      j.status === 'done'    ? j.step : '';
+    if (j.status === 'running') {
+      setTimeout(pollUpdate, 1500);
+    } else {
+      $('#ez-update-apply').disabled = false;
+      if (j.status === 'done') { toast('Update installed.', 'ok'); setTimeout(checkUpdate, 500); }
+      if (j.status === 'error') toast(j.step, 'error');
+    }
+  }).catch(function () {
+    // The service is restarting mid-poll — expected, just try again shortly.
+    setTimeout(pollUpdate, 1500);
+  });
+}
+
+/* ======================= ad blocking ======================= */
+
+function loadAdblock() {
+  return api('/adblock').then(function (j) {
+    $('#ez-adblock-toggle').classList.toggle('on', j.enabled);
+    $('#ez-adblock-desc').textContent = j.enabled
+      ? j.blocked_domains + ' domains blocked'
+      : 'Off';
+  });
+}
+
+$('#ez-adblock-toggle').addEventListener('click', function () {
+  var sw = this;
+  var turnOn = !sw.classList.contains('on');
+  sw.disabled = true;
+  api('/adblock', { method: 'POST', body: { enabled: turnOn ? '1' : '0' } })
+    .then(function (r) {
+      toast(r.message, 'ok');
+      setTimeout(loadAdblock, 1500);
+    })
+    .catch(function (e) { toast(e.message, 'error'); })
+    .finally(function () { sw.disabled = false; });
+});
 
 /* A page reload has no in-memory session, but the cookie is still valid
    server-side (HttpOnly, so we can't read it — we just try an authenticated

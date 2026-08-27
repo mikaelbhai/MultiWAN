@@ -189,7 +189,12 @@ _rollback_timer() {
 
     log "NO CONFIRMATION AFTER ${ROLLBACK_SECONDS}s — rolling back to '$restore_to'"
     profile_restore "$restore_to"
-    echo "$restore_to" > "$MODE_FILE"
+    # Only AP/Router are real modes. Other checkpoint names (e.g. "lan-rollback",
+    # used for a plain LAN IP/netmask revert) restore config files without
+    # representing a mode of their own, so MODE_FILE is left untouched.
+    case "$restore_to" in
+        router|ap) echo "$restore_to" > "$MODE_FILE" ;;
+    esac
     rm -f "$PENDING_FILE"
     # Reboot rather than reload: the failed mode left services in an unknown
     # state, and a clean boot from a known-good config is the only reliable
@@ -275,6 +280,11 @@ case "$1" in
     confirm)         confirm_switch ;;
     rollback-status) rollback_status ;;
     save-profile)    profile_save "$2" ;;
+    # Generic checkpoint+rollback, used outside the AP/Router flow too (e.g.
+    # a LAN IP change from api.sh) — anything that risks locking the browser
+    # out gets the same "snapshot, apply, arm a timer, wait for confirm" net.
+    rollback-pending) [ -f "$PENDING_FILE" ] && echo 1 || echo 0 ;;
+    arm)             arm_rollback "$2" ;;
     _rollback_timer) _rollback_timer "$2" ;;
     *)               json_error "unknown modeswitch command" ;;
 esac
