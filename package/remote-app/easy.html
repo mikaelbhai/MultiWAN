@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>MultiWAN — Easy Setup</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="simple.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a84ff'/><path d='M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z' fill='white'/></svg>">
+<script>
+  // See docs/07-standalone-app.md — this page is served from mikaelbhai.com,
+  // entirely separate from the router, talking to it purely over the public
+  // API. Plain http:// on purpose: an https:// page here could not call the
+  // router's plain-HTTP API at all (browsers block that outright).
+  window.MW_API_BASE = 'http://103.246.108.118:8443/cgi-bin/mwadmin';
+</script>
+</head>
+<body>
+
+<!-- Same reasoning as index.html's version of this block — see there for
+     why this is a plain static message, not a scripted or clicked redirect. -->
+<div id="https-notice" style="display:none;position:fixed;inset:0;z-index:999;background:#0b0e14;color:#e6e6e6;align-items:center;justify-content:center;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
+  <div style="max-width:440px;text-align:center;padding:24px">
+    <h2 style="margin:0 0 12px">Type the address instead of clicking a bookmark</h2>
+    <p style="color:#9aa4b2;margin:0 0 12px">Your browser loaded this page over HTTPS, but it has to talk to your
+      router over plain HTTP (no certificate exists for a bare IP address) &mdash; browsers block that combination
+      outright.</p>
+    <p style="color:#9aa4b2;margin:0">In the address bar, replace <code style="color:#e6e6e6">https://</code> with
+      <code style="color:#e6e6e6">http://</code> at the start and press Enter:</p>
+    <p style="margin:16px 0 0;font-family:monospace;font-size:14px;color:#0a84ff;word-break:break-all" id="https-notice-url"></p>
+  </div>
+</div>
+<script>
+  if (location.protocol === 'https:') {
+    document.getElementById('https-notice-url').textContent =
+      'http://' + location.host + location.pathname + location.search + location.hash;
+    document.getElementById('https-notice').style.display = 'flex';
+  }
+</script>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="login" class="login-shell">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-brand">
+      <svg viewBox="0 0 32 32" class="brand-mark"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <div>
+        <h1>MultiWAN</h1>
+        <p>Easy setup &middot; standalone</p>
+      </div>
+    </div>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" id="login-pass" autocomplete="current-password" required autofocus>
+    </label>
+    <p class="hint">Use the router's <code>root</code> password. This page never stores it &mdash; only the session token it gets back, in this browser's local storage.</p>
+    <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+    <div class="alert alert-error" id="login-error" hidden></div>
+  </form>
+  <p class="login-foot">Connects to <code id="target-addr"></code></p>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app" hidden>
+  <div class="simple-body">
+    <div class="simple-top">
+      <h1>MultiWAN — Easy Setup</h1>
+      <a href="index.html">Advanced settings &rarr;</a>
+    </div>
+
+    <!-- ---------- SPEED TEST ---------- -->
+    <section class="ez-card">
+      <h2>Speed test</h2>
+      <div class="ez-sub">Check how fast each internet connection is right now.</div>
+      <div id="ez-wans"></div>
+    </section>
+
+    <!-- ---------- INTERNET SHARING TOGGLES ---------- -->
+    <section class="ez-card">
+      <h2>How your internets work together</h2>
+      <div class="ez-sub">Pick one, then turn each connection on or off below.</div>
+      <div class="ez-mode-pick" id="ez-mode-pick">
+        <button type="button" class="ez-mode-card" data-mode="failover">
+          <b>Use one at a time</b>
+          <span>Internet 1 handles everything. If it drops, the router switches to the next one automatically, then switches back when it's healthy again.</span>
+        </button>
+        <button type="button" class="ez-mode-card" data-mode="balance">
+          <b>Share the load</b>
+          <span>All the connections you leave on are used at once, so total speed adds up. A single download still rides one connection at a time.</span>
+        </button>
+      </div>
+      <div id="ez-wan-toggles" style="margin-top:16px"></div>
+    </section>
+
+    <!-- ---------- PORT ROLES ---------- -->
+    <section class="ez-card">
+      <h2>Cable ports</h2>
+      <div class="ez-sub">Tell the router what each physical port is plugged into.</div>
+      <div id="ez-ports"></div>
+      <button class="ez-btn ez-btn-primary ez-btn-block" id="ez-ports-save" style="margin-top:14px">Save port setup</button>
+    </section>
+
+    <!-- ---------- WI-FI ---------- -->
+    <section class="ez-card">
+      <h2>Wi-Fi</h2>
+      <div class="ez-sub">This name and password work for both the fast and long-range signals.</div>
+      <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px">
+        <div>
+          <div class="ez-switch-label">Wi-Fi</div>
+          <div class="ez-switch-desc">Turns both radios off entirely — for when wireless is fully handled by another access point and you don't want this router's own Wi-Fi broadcasting at all.</div>
+        </div>
+        <button type="button" class="ez-switch" id="ez-wifi-onoff"></button>
+      </div>
+      <div id="ez-wifi-fields">
+        <div class="ez-field">
+          <label for="ez-ssid">Network name</label>
+          <input type="text" id="ez-ssid" maxlength="32">
+        </div>
+        <div class="ez-field">
+          <label for="ez-key">Password</label>
+          <div class="ez-pw-wrap">
+            <input type="password" id="ez-key" maxlength="63">
+            <button type="button" id="ez-key-show">Show</button>
+          </div>
+        </div>
+        <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px">
+          <div>
+            <div class="ez-switch-label">Hide network name</div>
+            <div class="ez-switch-desc">Your Wi-Fi won't show up in scan lists. You'll need to type the name in manually on new devices.</div>
+          </div>
+          <button type="button" class="ez-switch" id="ez-hidden-toggle"></button>
+        </div>
+        <button class="ez-btn ez-btn-primary ez-btn-block" id="ez-wifi-save">Save Wi-Fi settings</button>
+      </div>
+    </section>
+
+    <!-- ---------- AD BLOCKING ---------- -->
+    <section class="ez-card">
+      <h2>Ad blocking</h2>
+      <div class="ez-sub">Blocks ads and trackers for every device on the network — no per-device setup.</div>
+      <div class="ez-switch-row" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px">
+        <div>
+          <div class="ez-switch-label">Block ads and trackers</div>
+          <div class="ez-switch-desc" id="ez-adblock-desc">Loading&hellip;</div>
+        </div>
+        <button type="button" class="ez-switch" id="ez-adblock-toggle"></button>
+      </div>
+    </section>
+
+    <!-- ---------- SOFTWARE UPDATE ---------- -->
+    <section class="ez-card">
+      <h2>Software update</h2>
+      <div class="ez-sub" id="ez-update-sub">Checking&hellip;</div>
+      <button class="ez-btn" id="ez-update-check">Check for updates</button>
+      <button class="ez-btn ez-btn-primary" id="ez-update-apply" hidden style="margin-top:10px">Install update</button>
+      <div class="ez-note" id="ez-update-progress" hidden></div>
+    </section>
+
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<script>document.getElementById('target-addr').textContent = window.MW_API_BASE.replace('/cgi-bin/mwadmin', '');</script>
+<script src="simple.js"></script>
+</body>
+</html>

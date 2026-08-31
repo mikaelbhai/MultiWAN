@@ -5,7 +5,9 @@
 (function () {
 'use strict';
 
-var API = 'cgi-bin/mwadmin';
+// See app.js for the full story — set by a standalone deployment (e.g. the
+// remote-app copy hosted off-router) before this script loads.
+var API = window.MW_API_BASE || 'cgi-bin/mwadmin';
 var session = null;
 var wanPollTimers = {};
 
@@ -25,14 +27,20 @@ function api(path, opts) {
     // handler does not forward custom X-* headers into the script environment
     // at all, so a header-based token is silently dropped on every request.
     // The body is read directly off stdin server-side, same as the login
-    // password, and is known to arrive intact.
+    // password, and is known to arrive intact. Standalone (no cookie ever
+    // reaches this router cross-origin), this same field is what the server
+    // treats as the bearer session token — see app.js/docs/07 for the full
+    // explanation.
     var body = opts.body || {};
     if (session) body._csrf = session;
     cfg.headers['Content-Type'] = 'application/json';
     cfg.body = JSON.stringify(body);
-  } else if (opts.body) {
-    cfg.headers['Content-Type'] = 'application/json';
-    cfg.body = JSON.stringify(opts.body);
+  } else {
+    if (opts.body) {
+      cfg.headers['Content-Type'] = 'application/json';
+      cfg.body = JSON.stringify(opts.body);
+    }
+    if (session) path += (path.indexOf('?') === -1 ? '?' : '&') + 'session=' + encodeURIComponent(session);
   }
 
   return fetch(API + path, cfg).then(function (r) {
@@ -57,7 +65,14 @@ function toast(msg, kind) {
 
 /* ======================= auth ======================= */
 
+var REMOTE = !!window.MW_API_BASE;
+function saveRemoteSession(sid) {
+  if (!REMOTE) return;
+  try { sid ? localStorage.setItem('mw-remote-session', sid) : localStorage.removeItem('mw-remote-session'); } catch (e) {}
+}
+
 function showLogin() {
+  saveRemoteSession(null);
   session = null;
   $('#app').hidden = true;
   $('#login').hidden = false;
@@ -87,6 +102,7 @@ $('#login-form').addEventListener('submit', function (e) {
   btn.disabled = true; btn.textContent = 'Signing in…';
   api('/login', { method: 'POST', body: { password: pass } }).then(function (j) {
     session = j.session;
+    saveRemoteSession(session);
     showApp();
   }).catch(function (e) {
     err.textContent = e.message || 'Sign in failed.';
@@ -488,11 +504,17 @@ $('#ez-adblock-toggle').addEventListener('click', function () {
     .finally(function () { sw.disabled = false; });
 });
 
-/* A page reload has no in-memory session, but the cookie is still valid
-   server-side (HttpOnly, so we can't read it — we just try an authenticated
-   call and let a 401 send us back to the login screen). */
+/* A page reload has no in-memory session. On the router, the cookie is
+   still valid server-side (HttpOnly, so we can't read it — we just try an
+   authenticated call and let a 401 send us back to the login screen).
+   Standalone, there is no cookie at all, so the token saved in this
+   origin's own localStorage (if any) is attached before this first call. */
+if (REMOTE) {
+  try { session = localStorage.getItem('mw-remote-session') || null; } catch (e) {}
+}
 api('/status').then(function (j) {
   session = j.session;
+  saveRemoteSession(session);
   showApp();
 }).catch(function () {
   showLogin();
