@@ -514,6 +514,143 @@ api_mwan_wan_toggle() {
 }
 
 # ===========================================================================
+# PROTOCOL-BASED WAN SPLIT — pin TCP and/or UDP to a specific uplink,
+# independent of (and layered on top of) the failover/balance mode above.
+# ===========================================================================
+# mwan3's per-member metric IS the member section (mwan3.wan1_m1.metric etc.)
+# — every policy that references that same member sees the same priority.
+# The existing prio_failover policy, rule_https, and rule_default all share
+# wan1_m1/wan2_m2/wan3_m3, so giving TCP or UDP its own independent WAN
+# preference needs its own dedicated member set (named *_tcppref/*_udppref
+# below), not a second use of those same three sections.
+#
+# Regenerates every mwan3 rule_* section from scratch on every change — same
+# approach as blocklist_regenerate elsewhere in this file — so rule
+# evaluation order (first match wins; local subnets, then HTTPS stickiness,
+# then any protocol split, then everything else) can never silently drift
+# after repeated live edits, the way hand-reordering existing uci sections
+# could.
+mwan_build_pref_policy() {
+    local policy="$1" preferred="$2" suffix="$3" order w metric=1 mname
+
+    uci set mwan3.$policy='policy'
+    uci -q delete mwan3.$policy.use_member
+    uci set mwan3.$policy.last_resort='unreachable'
+
+    order="$preferred"
+    for w in wan1 wan2 wan3; do
+        [ "$w" = "$preferred" ] && continue
+        order="$order $w"
+    done
+
+    for w in $order; do
+        [ "$(uget_d mwan3.$w.enabled 1)" = "1" ] || continue
+        mname="${w}_${suffix}"
+        uci set mwan3.$mname='member'
+        uci set mwan3.$mname.interface="$w"
+        uci set mwan3.$mname.metric="$metric"
+        uci set mwan3.$mname.weight='1'
+        uci add_list mwan3.$policy.use_member="$mname"
+        metric=$((metric + 1))
+    done
+}
+
+mwan_rules_regenerate() {
+    local udp_wan tcp_wan s
+    udp_wan=$(uget_d mwadmin.mwan_protocol.udp_wan auto)
+    tcp_wan=$(uget_d mwadmin.mwan_protocol.tcp_wan auto)
+
+    for s in $(uci show mwan3 2>/dev/null | sed -n "s/^mwan3\.\(rule_[a-z0-9_]*\)=rule$/\1/p"); do
+        uci -q delete mwan3.$s
+    done
+    for s in $(uci show mwan3 2>/dev/null | sed -n "s/^mwan3\.\([a-z0-9_]*_tcppref\)=member$/\1/p"); do
+        uci -q delete mwan3.$s
+    done
+    for s in $(uci show mwan3 2>/dev/null | sed -n "s/^mwan3\.\([a-z0-9_]*_udppref\)=member$/\1/p"); do
+        uci -q delete mwan3.$s
+    done
+    uci -q delete mwan3.policy_tcp_pref
+    uci -q delete mwan3.policy_udp_pref
+
+    uci set mwan3.rule_localnets='rule'
+    uci set mwan3.rule_localnets.dest_ip='192.168.0.0/16'
+    uci set mwan3.rule_localnets.proto='all'
+    uci set mwan3.rule_localnets.use_policy='default'
+
+    uci set mwan3.rule_rfc1918_10='rule'
+    uci set mwan3.rule_rfc1918_10.dest_ip='10.0.0.0/8'
+    uci set mwan3.rule_rfc1918_10.proto='all'
+    uci set mwan3.rule_rfc1918_10.use_policy='default'
+
+    uci set mwan3.rule_rfc1918_172='rule'
+    uci set mwan3.rule_rfc1918_172.dest_ip='172.16.0.0/12'
+    uci set mwan3.rule_rfc1918_172.proto='all'
+    uci set mwan3.rule_rfc1918_172.use_policy='default'
+
+    uci set mwan3.rule_https='rule'
+    uci set mwan3.rule_https.dest_ip='0.0.0.0/0'
+    uci set mwan3.rule_https.proto='tcp'
+    uci set mwan3.rule_https.dest_port='443'
+    uci set mwan3.rule_https.sticky='1'
+    uci set mwan3.rule_https.timeout='600'
+    uci set mwan3.rule_https.use_policy='prio_failover'
+
+    if [ "$tcp_wan" != "auto" ]; then
+        mwan_build_pref_policy policy_tcp_pref "$tcp_wan" tcppref
+        uci set mwan3.rule_tcp_split='rule'
+        uci set mwan3.rule_tcp_split.dest_ip='0.0.0.0/0'
+        uci set mwan3.rule_tcp_split.proto='tcp'
+        uci set mwan3.rule_tcp_split.sticky='1'
+        uci set mwan3.rule_tcp_split.timeout='600'
+        uci set mwan3.rule_tcp_split.use_policy='policy_tcp_pref'
+    fi
+
+    if [ "$udp_wan" != "auto" ]; then
+        mwan_build_pref_policy policy_udp_pref "$udp_wan" udppref
+        uci set mwan3.rule_udp_split='rule'
+        uci set mwan3.rule_udp_split.dest_ip='0.0.0.0/0'
+        uci set mwan3.rule_udp_split.proto='udp'
+        uci set mwan3.rule_udp_split.sticky='1'
+        uci set mwan3.rule_udp_split.timeout='600'
+        uci set mwan3.rule_udp_split.use_policy='policy_udp_pref'
+    fi
+
+    uci set mwan3.rule_default='rule'
+    uci set mwan3.rule_default.dest_ip='0.0.0.0/0'
+    uci set mwan3.rule_default.proto='all'
+    uci set mwan3.rule_default.sticky='1'
+    uci set mwan3.rule_default.timeout='600'
+    uci set mwan3.rule_default.use_policy='prio_failover'
+
+    uci commit mwan3
+}
+
+api_mwan_protocol_get() {
+    printf '{"ok":true,%s,%s}\n' \
+        "$(jstr udp_wan "$(uget_d mwadmin.mwan_protocol.udp_wan auto)")" \
+        "$(jstr tcp_wan "$(uget_d mwadmin.mwan_protocol.tcp_wan auto)")"
+}
+
+api_mwan_protocol_set() {
+    local udp_wan tcp_wan
+    udp_wan=$(bodyval udp_wan); tcp_wan=$(bodyval tcp_wan)
+    [ -z "$udp_wan" ] && udp_wan=auto
+    [ -z "$tcp_wan" ] && tcp_wan=auto
+    case "$udp_wan" in auto|wan1|wan2|wan3) ;; *) json_error "Invalid UDP WAN assignment."; return ;; esac
+    case "$tcp_wan" in auto|wan1|wan2|wan3) ;; *) json_error "Invalid TCP WAN assignment."; return ;; esac
+
+    uci set mwadmin.mwan_protocol='mwan_protocol'
+    uci set mwadmin.mwan_protocol.udp_wan="$udp_wan"
+    uci set mwadmin.mwan_protocol.tcp_wan="$tcp_wan"
+    uci commit mwadmin
+
+    mwan_rules_regenerate
+    /etc/init.d/mwan3 restart >/dev/null 2>&1
+    log "protocol WAN split: udp=$udp_wan tcp=$tcp_wan"
+    json_ok "$(jstr message 'Protocol WAN assignment saved.')"
+}
+
+# ===========================================================================
 # DEVICES — per-device live throughput, for the admin UI's Devices tab.
 # ===========================================================================
 # Byte counting comes from nlbwmon (net/nlbwmon), an existing OpenWrt package
@@ -1925,20 +2062,37 @@ REMOTE_KEYFILE="$MW_STATE/remote_id_ed25519"
 # and it already no-ops safely on its own if run with nothing configured, but
 # not scheduling it at all is one less wakeup on a device this constrained.
 sync_offload_cron() {
-    local want="$1" f="/etc/crontabs/root"
-    local line='*/30 * * * * /usr/lib/mwadmin/history_offload.sh'
+    local want="$1" f="/etc/crontabs/root" changed=0
     touch "$f" 2>/dev/null
     if [ "$want" = "1" ]; then
         grep -qF 'history_offload.sh' "$f" 2>/dev/null || {
-            echo "$line" >> "$f"
-            /etc/init.d/cron restart >/dev/null 2>&1
+            echo '*/30 * * * * /usr/lib/mwadmin/history_offload.sh' >> "$f"
+            changed=1
+        }
+        # Shorter interval than history: nlbwmon's own counters live only in
+        # RAM and reset on reboot, so a crash between offloads loses whatever
+        # hasn't shipped yet. Bounding that window matters more here — this
+        # device has demonstrated it can crash under load.
+        grep -qF 'bandwidth_offload.sh' "$f" 2>/dev/null || {
+            echo '*/5 * * * * /usr/lib/mwadmin/bandwidth_offload.sh' >> "$f"
+            changed=1
         }
     else
-        if grep -qF 'history_offload.sh' "$f" 2>/dev/null; then
-            grep -vF 'history_offload.sh' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-            /etc/init.d/cron restart >/dev/null 2>&1
+        if grep -qE 'history_offload\.sh|bandwidth_offload\.sh' "$f" 2>/dev/null; then
+            grep -vE 'history_offload\.sh|bandwidth_offload\.sh' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+            changed=1
         fi
     fi
+    [ "$changed" = "1" ] && /etc/init.d/cron restart >/dev/null 2>&1
+}
+
+# Whether the relay host is usable for offloading data to at all — distinct
+# from mwadmin.remote.enabled, which is specifically about the admin-panel
+# relay tunnel (Method 1 on the Remote Access page). A relay host can be
+# configured and used for data offload without ever exposing the admin
+# panel through it, and vice versa.
+offload_ready() {
+    [ -n "$(uget mwadmin.remote.host)" ] && [ -n "$(uget mwadmin.remote.user)" ] && [ -f "$REMOTE_KEYFILE" ]
 }
 
 api_remote_get() {
@@ -1988,7 +2142,7 @@ api_remote_set() {
     else
         ( sleep 1; /etc/init.d/mwremote stop; /etc/init.d/mwremote disable ) >/dev/null 2>&1 &
     fi
-    sync_offload_cron "$([ "$enabled" = "1" ] && echo 1 || echo 0)"
+    sync_offload_cron "$(offload_ready && echo 1 || echo 0)"
     json_ok "$(jstr message 'Remote access settings saved.')"
 }
 
@@ -2282,6 +2436,8 @@ api_dispatch() {
         /mwan:GET)                api_mwan_get ;;
         /mwan/mode:POST)          api_mwan_mode_set ;;
         /mwan/wan/toggle:POST)    api_mwan_wan_toggle ;;
+        /mwan/protocol:GET)       api_mwan_protocol_get ;;
+        /mwan/protocol:POST)      api_mwan_protocol_set ;;
 
         /wan:GET)                 api_wan_get ;;
         /wan:POST)                api_wan_set ;;

@@ -31,29 +31,48 @@ configure_uhttpd() {
         return 1
     fi
 
+    # LuCI has no real backend on this build (no /usr/lib/lua/luci at all —
+    # confirmed live; only a dead redirect page and a 403-ing stub script
+    # were ever there) and this app is meant to be the only thing reachable
+    # on this router, full stop — so its uhttpd instance is removed outright
+    # rather than just narrowed to coexist with it, unconditionally, not
+    # only when the admin_ip alias below happens to be configured.
+    disable_luci
+
     # The port-80 alias only makes sense in Router mode: it's a second static
     # address on our own bridge, and in AP mode "our own bridge" is a DHCP
     # client on somebody else's network we don't control — statically
     # claiming an address there could collide with a real device on it.
-    if [ "$is_router" = "1" ]; then
-        admin_ip=$(sync_admin_alias "$lan_ip")
-        [ -n "$admin_ip" ] && sync_luci_bind "$lan_ip"
-    fi
+    [ "$is_router" = "1" ] && admin_ip=$(sync_admin_alias "$lan_ip")
 
     # ---------------------------------------------------------------------
     # THE SECURITY-CRITICAL LINE
     # ---------------------------------------------------------------------
-    # listen_http only ever gets "<lan_ip>:<port>" and, if the dedicated alias
-    # exists, "<admin_ip>:80" — never "0.0.0.0:<port>". Binding to specific
-    # addresses means the socket does not exist on the WAN interfaces at all.
-    # Even if a firewall rule were later added by mistake, there would be
-    # nothing listening on the WAN side to accept a connection. The firewall
-    # rule in config/20-firewall.sh is the second layer, not the only one.
+    # listen_http/listen_https only ever get specific LAN addresses — lan_ip
+    # itself (on :80, :443, and :<port>) and, if the dedicated alias exists,
+    # "<admin_ip>:80" — never "0.0.0.0:<port>". Binding to specific addresses
+    # means the socket does not exist on the WAN interfaces at all. Even if a
+    # firewall rule were later added by mistake, there would be nothing
+    # listening on the WAN side to accept a connection. The firewall rule in
+    # config/20-firewall.sh is the second layer, not the only one.
     uci set uhttpd.mwadmin='uhttpd'
     uci -q delete uhttpd.mwadmin.listen_http
     uci -q delete uhttpd.mwadmin.listen_https
     uci add_list uhttpd.mwadmin.listen_http="${lan_ip}:${port}"
+    uci add_list uhttpd.mwadmin.listen_http="${lan_ip}:80"
     [ -n "$admin_ip" ] && uci add_list uhttpd.mwadmin.listen_http="${admin_ip}:80"
+    # Reuses the self-signed cert OpenWrt's own uhttpd defaults already
+    # generate for LuCI (now removed) — real TLS, just not one a browser
+    # will trust by default without clicking through a warning once. A real
+    # certificate needs a real domain and a CA that can verify it, which a
+    # bare LAN IP structurally cannot have; this is still strictly better
+    # than the plain-HTTP-only alternative for anything reachable off this
+    # one router.
+    if [ -f /etc/uhttpd.crt ] && [ -f /etc/uhttpd.key ]; then
+        uci add_list uhttpd.mwadmin.listen_https="${lan_ip}:443"
+        uci set uhttpd.mwadmin.cert='/etc/uhttpd.crt'
+        uci set uhttpd.mwadmin.key='/etc/uhttpd.key'
+    fi
     uci set uhttpd.mwadmin.home="$WWW_ROOT"
     uci set uhttpd.mwadmin.cgi_prefix='/cgi-bin'
     uci set uhttpd.mwadmin.index_page='index.html'
@@ -110,27 +129,18 @@ sync_admin_alias() {
     printf '%s' "$cur"
 }
 
-# LuCI's default uhttpd instance ("main") wildcard-binds 0.0.0.0:80 by
-# default. On Linux a wildcard bind on a port blocks any other process from
-# binding ANY address on that same port — not just the same address — so as
-# long as that wildcard bind exists, our admin_ip:80 alias can never come up,
-# full stop. This narrows "main"'s plain-HTTP bind to just the LAN address it
-# actually needs to serve, freeing port 80 everywhere else. Only touched when
-# the admin alias exists — no alias, no conflict, LuCI is left on its normal
-# OpenWrt default. HTTPS (443) is untouched either way; there's no port-80
-# style conflict there since nothing else on this box wants 443.
-sync_luci_bind() {
-    local lan_ip="$1" cur
-
-    cur=$(uci -q get uhttpd.main.listen_http | tr ' ' '\n' | grep -m1 ':80$')
-    [ "$cur" = "${lan_ip}:80" ] && return 0
-
-    uci -q delete uhttpd.main.listen_http
-    uci add_list uhttpd.main.listen_http="${lan_ip}:80"
-    uci add_list uhttpd.main.listen_http='[::]:80'
+# Removes uhttpd's "main" instance (LuCI's) outright, idempotently — a no-op
+# once it's already gone. LuCI's default wildcard bind on 0.0.0.0:80 would
+# otherwise block ANY other process from binding any address on that same
+# port (a Linux socket rule, not LuCI-specific), which is what originally
+# forced the separate admin_ip:80 alias workaround below to exist in the
+# first place — that alias is kept for the friendly-hostname convenience it
+# still provides, but freeing port 80 itself no longer depends on it.
+disable_luci() {
+    uci -q get uhttpd.main >/dev/null 2>&1 || return 0
+    uci -q delete uhttpd.main
     uci commit uhttpd
-
-    logger -t mwadmin "LuCI HTTP listener narrowed to ${lan_ip}:80 (was ${cur:-0.0.0.0:80}) to free port 80 for the admin alias"
+    logger -t mwadmin "removed LuCI's uhttpd instance — no working backend existed behind it, and this app is meant to be the only thing reachable here"
 }
 
 # Keeps the friendly hostname (config/50-system-dhcp.sh's "mwadmin_alias"

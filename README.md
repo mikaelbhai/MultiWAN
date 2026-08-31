@@ -219,11 +219,12 @@ Full detail in [`docs/03-failover-expectations.md`](docs/03-failover-expectation
   whenever the LAN IP changes — from the UI, LuCI, or a manual `uci set` — so bookmarking it means
   you never have to chase a changed IP again. It only resolves for LAN clients using this router
   as their DNS server (the default) and is not a real, publicly-registered domain.
-- To make that hostname work with no `:8080` suffix, the admin UI gets a second, LAN-only address
-  dedicated to port 80 (`ADMIN_ALIAS_HOST` in `mwan.env`, default `.254`), and LuCI's own plain-HTTP
-  listener — normally wildcard-bound, which blocks anything else from using port 80 anywhere on the
-  box — is narrowed to just its own LAN address to free that port up. LuCI keeps working exactly as
-  before on the primary LAN IP; it just no longer also listens on every other address.
+- LuCI is removed entirely (no working backend ever existed behind it on this build, and this app
+  is meant to be the only thing reachable on this router) — the admin UI answers directly on the
+  primary LAN address's port 80 and 443 (a self-signed cert, real TLS but not one a browser trusts
+  by default), plus the original `:8080`. A second, LAN-only address dedicated to port 80
+  (`ADMIN_ALIAS_HOST` in `mwan.env`, default `.254`) exists purely so `ROUTER_HOSTNAME` has a
+  stable target independent of the primary address ever changing.
 
 ---
 

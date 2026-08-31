@@ -101,14 +101,13 @@ uci set network.lan.netmask="$LAN_NETMASK"
 # for the matching dhcp.lan.ra/dhcpv6 settings.
 
 # --- Dedicated LAN alias for the admin UI on port 80 -------------------------
-# LuCI already owns port 80 (wildcard-bound to 0.0.0.0, which on Linux blocks
-# any other process from taking that port on any address at all). To let
-# ROUTER_HOSTNAME (e.g. multiwan.router) work with no ":8080" suffix — the whole
-# point of it — the admin UI gets a second, dedicated address on the same LAN
-# and claims port 80 there. package/init.d/mwadmin then narrows LuCI's own
-# plain-HTTP bind down to just the primary LAN address (freeing the wildcard),
-# the moment it detects this alias exists — LuCI keeps working exactly as
-# before on the primary address, just no longer also listening everywhere.
+# package/init.d/mwadmin removes LuCI's uhttpd instance outright (no working
+# backend ever existed behind it, and this app is meant to be the only thing
+# reachable on this router) and binds the admin UI directly on the primary
+# LAN address's port 80 and 443, no alias needed for that anymore. This
+# second, dedicated address is kept anyway purely for ROUTER_HOSTNAME (e.g.
+# multiwan.router) to have a stable, memorable target independent of the
+# primary address ever changing.
 #
 # ADMIN_ALIAS_HOST is just the last octet, combined with whatever subnet
 # LAN_IPADDR is currently in — so it tracks a LAN IP change automatically

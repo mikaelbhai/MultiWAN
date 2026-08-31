@@ -584,10 +584,19 @@ views.wan = function () {
 
   Promise.all(ifaces.map(function (i) {
     return api('/wan?iface=' + i).catch(function () { return null; });
-  })).then(function (results) {
+  }).concat([api('/mwan/protocol').catch(function () { return { udp_wan: 'auto', tcp_wan: 'auto' }; })]))
+    .then(function (results) {
+    var proto = results.pop();
     var editCards = ifaces.map(function (i, idx) {
       return wanEditCard(results[idx] || { iface: i, proto: '' });
     }).join('');
+
+    function protoOptions(sel) {
+      return ['auto'].concat(ifaces).map(function (v) {
+        var label = v === 'auto' ? 'Automatic (use failover/balance mode above)' : v.toUpperCase();
+        return '<option value="' + v + '"' + (v === sel ? ' selected' : '') + '>' + label + '</option>';
+      }).join('');
+    }
 
     page('WAN &amp; failover', 'Priority failover across three uplinks, managed by mwan3.',
       '<div class="alert alert-info"><strong>This is fast failover, not seamless failover.</strong>' +
@@ -598,6 +607,17 @@ views.wan = function () {
         '<p>Health-check state from the mwan3 trackers.</p></div></div>' +
         '<div class="card-body tight" id="dash-wans"></div></div>' +
       editCards +
+      '<div class="card"><div class="card-head"><h3>Protocol-based WAN split</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin-top:0">Pin all TCP or all UDP traffic to a specific uplink, independent of ' +
+        'the failover/balance mode above — e.g. UDP-sensitive traffic (games, VoIP) on your lowest-latency line, ' +
+        'everything else on the mode above. Each still automatically fails over to whichever other enabled WANs ' +
+        'are healthy if its assigned uplink goes down; this only sets the preferred order, not a hard lock.</p>' +
+        '<div class="form-row">' +
+        '<label class="field"><span>TCP traffic</span><select id="proto-tcp">' + protoOptions(proto.tcp_wan) + '</select></label>' +
+        '<label class="field"><span>UDP traffic</span><select id="proto-udp">' + protoOptions(proto.udp_wan) + '</select></label>' +
+        '</div>' +
+        '<button class="btn btn-primary" id="proto-save">Save</button>' +
+        '</div></div>' +
       '<div class="card"><div class="card-head"><h3>Health-check tuning</h3></div><div class="card-body">' +
         '<div class="tbl-wrap"><table><thead><tr><th>Uplink</th><th>Interval</th><th>Timeout</th>' +
         '<th>Fail count</th><th>Recover count</th><th>Targets required</th></tr></thead><tbody>' +
@@ -612,6 +632,13 @@ views.wan = function () {
 
     if (s.wans) renderStatusInto(s);
     wireWanEditCards(ifaces);
+
+    $('#proto-save').onclick = function () {
+      var body = { tcp_wan: $('#proto-tcp').value, udp_wan: $('#proto-udp').value };
+      api('/mwan/protocol', { method: 'POST', body: body })
+        .then(function (r) { toast(r.message, 'ok'); })
+        .catch(function (e) { toast(e.message, 'error'); });
+    };
   });
 };
 

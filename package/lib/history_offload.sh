@@ -15,8 +15,10 @@
 
 . /usr/lib/mwadmin/common.sh
 
-[ "$(uget_d mwadmin.remote.enabled 0)" = "1" ] || exit 0
-
+# Deliberately NOT gated on mwadmin.remote.enabled: that flag controls the
+# admin-panel relay tunnel specifically, a different concern from offloading
+# data to a relay host you've already configured. Requiring host/user/key to
+# be set is enough on its own.
 host=$(uget mwadmin.remote.host)
 user=$(uget mwadmin.remote.user)
 port=$(uget_d mwadmin.remote.ssh_port 22)
