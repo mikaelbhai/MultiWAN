@@ -11,6 +11,7 @@
 //   GET  portal.php/sites?r=ID[&mac=..]                       every site ever used, whole network or one device
 require __DIR__ . '/../portal/lib.php';
 require __DIR__ . '/../portal/activity_lib.php';
+require __DIR__ . '/../portal/caps_lib.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $route  = $_SERVER['PATH_INFO'] ?? '';
@@ -35,19 +36,77 @@ switch ("$method $route") {
         $u = require_user();
         json_out(200, ['ok' => true, 'user' => $u]);
 
-    case 'POST /enroll-key':
-        // admins only: a one-time key so another router running the Baytaar software can join with it
-        $u = require_user();
-        if (!(int) $u['is_admin']) fail(403, 'Admins only.');
-        require_once __DIR__ . '/../portal/enroll_lib.php';
+    case 'POST /register':
+        // Self-service sign-up. A hidden field only bots fill in is a cheap first filter.
         $b = read_json_body(4096);
-        $nm = trim(mb_substr(preg_replace('/[\x00-\x1f]/', '', (string) ($b['name'] ?? '')), 0, 60));
-        if ($nm === '') fail(400, 'Give the router a name.');
-        [$rid, $key] = enroll_new_key($nm, 48);
-        db()->prepare('INSERT OR IGNORE INTO user_routers (user_id, router_id) VALUES (?, ?)')->execute([$u['id'], $rid]);
+        if (trim((string) ($b['website'] ?? '')) !== '') fail(400, 'Could not create the account.');
+        $u = register_user((string) ($b['email'] ?? ''), (string) ($b['password'] ?? ''));
+        json_out(200, ['ok' => true, 'user' => $u]);
+
+    case 'GET /api-keys':
+        $u = require_user();
+        $st = db()->prepare('SELECT k.id, k.label, k.prefix, k.created, k.last_used, k.uses,
+                                    (SELECT COUNT(*) FROM routers r WHERE r.api_key_id = k.id) AS routers
+                             FROM api_keys k WHERE k.user_id = ? AND k.revoked = 0 ORDER BY k.id DESC');
+        $st->execute([$u['id']]);
         $site = strtolower(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
-        json_out(200, ['ok' => true, 'router_id' => $rid, 'key' => $key, 'valid_hours' => 48,
+        json_out(200, ['ok' => true, 'keys' => $st->fetchAll(), 'site' => $site]);
+
+    case 'POST /api-keys':
+        // A reusable key: enter the website's address and this key on any number of routers.
+        $u = require_user();
+        $b = read_json_body(4096);
+        $label = trim(mb_substr(preg_replace('/[\x00-\x1f\x7f]/u', '', (string) ($b['label'] ?? '')), 0, 40));
+        if ($label === '') $label = 'My routers';
+        [$kid, $key] = api_key_create($u, $label);
+        $site = strtolower(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
+        json_out(200, ['ok' => true, 'id' => $kid, 'key' => $key, 'label' => $label, 'site' => $site,
                        'command' => "sh /usr/lib/mwadmin/connect.sh join $site $key"]);
+
+    case 'POST /api-keys/revoke':
+        // Routers already connected keep working; the key just cannot connect new ones.
+        $u = require_user();
+        $b = read_json_body(4096);
+        $st = db()->prepare('UPDATE api_keys SET revoked = 1 WHERE id = ? AND user_id = ?');
+        $st->execute([(int) ($b['id'] ?? 0), $u['id']]);
+        if (!$st->rowCount()) fail(404, 'No such key.');
+        json_out(200, ['ok' => true]);
+
+    case 'POST /router-rename':
+        $u = require_user();
+        $b = read_json_body(4096);
+        $rid = (int) ($b['id'] ?? 0);
+        if (!router_for($u, $rid)) fail(403, 'This router is not assigned to your account.');
+        $nm = trim(mb_substr(preg_replace('/[\x00-\x1f\x7f]/u', '', (string) ($b['name'] ?? '')), 0, 60));
+        if ($nm === '') fail(400, 'Give the router a name.');
+        db()->prepare('UPDATE routers SET name = ? WHERE id = ?')->execute([$nm, $rid]);
+        json_out(200, ['ok' => true]);
+
+    case 'POST /router-remove':
+        // Takes the router off this account. If nobody else has it, its record and history go too;
+        // the router itself keeps working, it just stops reporting here (and stops being reachable from here).
+        $u = require_user();
+        $b = read_json_body(4096);
+        $rid = (int) ($b['id'] ?? 0);
+        if (!router_for($u, $rid)) fail(403, 'This router is not assigned to your account.');
+        $pdo = db();
+        $pdo->prepare('DELETE FROM user_routers WHERE user_id = ? AND router_id = ?')->execute([$u['id'], $rid]);
+        $st = $pdo->prepare('SELECT COUNT(*) FROM user_routers WHERE router_id = ?'); $st->execute([$rid]);
+        if (!(int) $st->fetchColumn()) {
+            foreach (['app_use', 'visits', 'site_totals', 'events', 'alerts', 'line_watch', 'router_watch', 'relay', 'relay_seen', 'enroll_keys'] as $t) {
+                try { $pdo->prepare("DELETE FROM $t WHERE router_id = ?")->execute([$rid]); } catch (Throwable $e) { /* table not created yet */ }
+            }
+            $pdo->prepare('DELETE FROM routers WHERE id = ?')->execute([$rid]);
+        }
+        json_out(200, ['ok' => true]);
+
+    case 'GET /capabilities':
+        // What this router can do and what this website can use of it, with the side to update named.
+        $u = require_user();
+        $rid = (int) ($_GET['r'] ?? 0);
+        $r = router_for($u, $rid);
+        if (!$r) fail(403, 'This router is not assigned to your account.');
+        json_out(200, caps_report($r, !empty($_GET['refresh'])));
 
     case 'GET /routers':
         $u = require_user();

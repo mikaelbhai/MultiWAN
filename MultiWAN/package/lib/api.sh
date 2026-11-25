@@ -69,6 +69,8 @@ mwan3_mode() {
 . /usr/lib/mwadmin/drive.sh
 # Join a website with a one-time key (/connect).
 . /usr/lib/mwadmin/connect.sh
+# What this router can do, for a website to match itself to (/capabilities).
+. /usr/lib/mwadmin/caps.sh
 
 api_status() {
     local mode; mode=$(sh /usr/lib/mwadmin/modeswitch.sh mode | sed -n 's/.*"mode":"\([a-z]*\)".*/\1/p')
@@ -2808,6 +2810,7 @@ api_dispatch() {
         /site:POST)               api_site_set ;;
         /site/name:POST)          api_site_name ;;
         /site/force:POST)         api_site_force ;;
+        /capabilities:GET)        api_capabilities ;;
         /connect:GET)             api_connect_get ;;
         /connect:POST)            api_connect_post ;;
         /quality:GET)             api_quality_get ;;
@@ -2944,6 +2947,6 @@ api_dispatch() {
         /mode/router:POST)        sh /usr/lib/mwadmin/modeswitch.sh to-router ;;
         /mode/confirm:POST)       sh /usr/lib/mwadmin/modeswitch.sh confirm ;;
 
-        *) json_error "No such endpoint: $method $route" ;;
+        *) echo "{\"ok\":false,\"unsupported\":true,$(jstr error "No such endpoint: $method $route. This router's software does not have it. Update the router (Settings > Software update).")}" ;;
     esac
 }

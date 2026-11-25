@@ -35,7 +35,90 @@ function db(): PDO {
         router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
         PRIMARY KEY (user_id, router_id))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS login_fails (ip TEXT NOT NULL, ts INTEGER NOT NULL)');
+    // Self-service: anyone can register; every account owns its routers and its own reusable
+    // API keys (a router joins with the website name + one of these keys, see enroll.php).
+    $pdo->exec('CREATE TABLE IF NOT EXISTS register_log (ip TEXT NOT NULL, ts INTEGER NOT NULL)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS api_keys (
+        id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key_hash TEXT UNIQUE NOT NULL, prefix TEXT NOT NULL, label TEXT NOT NULL,
+        created INTEGER NOT NULL, last_used INTEGER, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0)');
+    $have = [];
+    foreach ($pdo->query('PRAGMA table_info(routers)') as $c) $have[$c['name']] = true;
+    foreach (['device_id' => 'TEXT', 'api_key_id' => 'INTEGER', 'caps_json' => 'TEXT', 'caps_at' => 'INTEGER'] as $col => $type) {
+        if (empty($have[$col])) { try { $pdo->exec("ALTER TABLE routers ADD COLUMN $col $type"); } catch (Throwable $e) { /* another request added it first */ } }
+    }
     return $pdo;
+}
+
+const MAX_KEYS_PER_USER    = 10;
+const MAX_ROUTERS_PER_USER = 25;
+const REGISTER_PER_IP_HOUR = 5;      // new accounts per address per hour
+const REGISTER_PER_DAY     = 300;    // new accounts on the whole site per day
+
+// Create an account and sign it in. Self-service: no administrator involved.
+function register_user(string $email, string $password): array {
+    $pdo = db();
+    $email = strtolower(trim($email));
+    if (strlen($email) > 120 || !filter_var($email, FILTER_VALIDATE_EMAIL)) fail(400, 'Enter a valid email address.');
+    if (strlen($password) < 10)  fail(400, 'Use a password of at least 10 characters.');
+    if (strlen($password) > 200) fail(400, 'That password is too long (200 characters at most).');
+    if (strtolower($password) === $email) fail(400, 'The password cannot be your email address.');
+    $now = time(); $ip = client_ip();
+    db_retry(function () use ($pdo, $now) { $pdo->prepare('DELETE FROM register_log WHERE ts < ?')->execute([$now - 86400]); });
+    $st = $pdo->prepare('SELECT COUNT(*) FROM register_log WHERE ip = ? AND ts > ?'); $st->execute([$ip, $now - 3600]);
+    $n = (int) $st->fetchColumn(); $st->closeCursor();
+    if ($n >= REGISTER_PER_IP_HOUR) fail(429, 'Too many accounts created from this connection. Try again in an hour.');
+    $q = $pdo->query('SELECT COUNT(*) FROM register_log'); $total = (int) $q->fetchColumn(); $q->closeCursor();
+    if ($total >= REGISTER_PER_DAY) fail(429, 'Registration is busy right now. Try again later.');
+    $st = $pdo->prepare('SELECT 1 FROM users WHERE email = ?'); $st->execute([$email]);
+    if (one($st)) fail(409, 'An account with this email already exists. Sign in instead.');
+    $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+    try {
+        db_retry(function () use ($pdo, $ip, $now, $email, $hash) {
+            $pdo->prepare('INSERT INTO register_log (ip, ts) VALUES (?, ?)')->execute([$ip, $now]);
+            $pdo->prepare('INSERT INTO users (email, pass_hash, is_admin, created) VALUES (?, ?, 0, ?)')->execute([$email, $hash, $now]);
+        });
+    } catch (Throwable $e) {
+        if (stripos($e->getMessage(), 'unique') !== false) fail(409, 'An account with this email already exists. Sign in instead.');
+        fail(503, 'The website is busy. Try again in a moment.');
+    }
+    return login($email, $password);
+}
+
+// A new reusable API key for this user. Returns the key (shown once; only its hash is kept).
+function api_key_create(array $user, string $label): array {
+    $pdo = db();
+    $st = $pdo->prepare('SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0'); $st->execute([$user['id']]);
+    $n = (int) $st->fetchColumn(); $st->closeCursor();
+    if ($n >= MAX_KEYS_PER_USER) fail(400, 'You already have ' . MAX_KEYS_PER_USER . ' active keys. Revoke one first.');
+    $key = 'bu' . bin2hex(random_bytes(20));
+    $kid = db_retry(function () use ($pdo, $user, $key, $label) {
+        $pdo->prepare('INSERT INTO api_keys (user_id, key_hash, prefix, label, created) VALUES (?, ?, ?, ?, ?)')
+            ->execute([$user['id'], hash('sha256', $key), substr($key, 0, 6), $label, time()]);
+        return (int) $pdo->lastInsertId();
+    });
+    return [$kid, $key];
+}
+
+// A SELECT whose rows were not all read keeps its read snapshot open, and a write made while it is
+// open fails at once with "database is locked" if anything else wrote in between (the routers upload
+// every minute). So always read one row and close the cursor.
+function one(PDOStatement $st) {
+    $r = $st->fetch();
+    $st->closeCursor();
+    return $r;
+}
+
+// Run a write; if the database is busy, wait a moment and try again.
+function db_retry(callable $fn, int $tries = 8) {
+    for ($i = 1; ; $i++) {
+        try { return $fn(); }
+        catch (PDOException $e) {
+            $m = $e->getMessage();
+            if ($i >= $tries || (stripos($m, 'locked') === false && stripos($m, 'busy') === false)) throw $e;
+            usleep(120000 * $i);
+        }
+    }
 }
 
 function json_out(int $code, array $data): void {
@@ -80,7 +163,7 @@ function current_user(): ?array {
     $st = db()->prepare('SELECT u.id, u.email, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id
                          WHERE s.token_hash = ? AND s.expires > ?');
     $st->execute([hash('sha256', $tok), time()]);
-    return $st->fetch() ?: null;
+    return one($st) ?: null;
 }
 
 function require_user(): array {
@@ -102,29 +185,31 @@ function set_session_cookie(string $value, int $expires): void {
 function login(string $email, string $password): array {
     $pdo = db();
     $ip = client_ip();
-    $pdo->prepare('DELETE FROM login_fails WHERE ts < ?')->execute([time() - FAIL_WINDOW]);
+    db_retry(function () use ($pdo) { $pdo->prepare('DELETE FROM login_fails WHERE ts < ?')->execute([time() - FAIL_WINDOW]); });
     $st = $pdo->prepare('SELECT COUNT(*) c FROM login_fails WHERE ip = ?');
     $st->execute([$ip]);
-    if ((int) $st->fetch()['c'] >= MAX_FAILS) fail(429, 'Too many failed attempts. Try again in 15 minutes.');
+    if ((int) one($st)['c'] >= MAX_FAILS) fail(429, 'Too many failed attempts. Try again in 15 minutes.');
 
     $st = $pdo->prepare('SELECT * FROM users WHERE email = ?');
     $st->execute([strtolower(trim($email))]);
-    $u = $st->fetch();
+    $u = one($st);
     // Do the same amount of hashing work when the account does not exist, so
     // a wrong email and a wrong password take the same time to answer.
     $good = false;
     if ($u) $good = password_verify($password, $u['pass_hash']);
     else    password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
     if (!$good) {
-        $pdo->prepare('INSERT INTO login_fails (ip, ts) VALUES (?, ?)')->execute([$ip, time()]);
+        db_retry(function () use ($pdo, $ip) { $pdo->prepare('INSERT INTO login_fails (ip, ts) VALUES (?, ?)')->execute([$ip, time()]); });
         usleep(600000);
         fail(401, 'Wrong email or password.');
     }
     $tok = bin2hex(random_bytes(32));
     $exp = time() + SESSION_HOURS * 3600;
-    $pdo->prepare('DELETE FROM sessions WHERE expires < ?')->execute([time()]);
-    $pdo->prepare('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)')
-        ->execute([hash('sha256', $tok), $u['id'], $exp]);
+    db_retry(function () use ($pdo, $tok, $exp, $u) {
+        $pdo->prepare('DELETE FROM sessions WHERE expires < ?')->execute([time()]);
+        $pdo->prepare('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)')
+            ->execute([hash('sha256', $tok), $u['id'], $exp]);
+    });
     set_session_cookie($tok, $exp);
     return ['id' => $u['id'], 'email' => $u['email'], 'is_admin' => (int) $u['is_admin']];
 }
@@ -142,7 +227,7 @@ function router_for(array $user, int $routerId): ?array {
     $st = db()->prepare('SELECT r.* FROM routers r JOIN user_routers ur ON ur.router_id = r.id
                          WHERE r.id = ? AND ur.user_id = ?');
     $st->execute([$routerId, $user['id']]);
-    return $st->fetch() ?: null;
+    return one($st) ?: null;
 }
 
 function routers_of(array $user): array {

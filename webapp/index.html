@@ -114,6 +114,7 @@ input:focus { border-color: var(--a1); box-shadow: 0 0 0 4px rgba(37,99,235,.14)
 .err { display: flex; gap: 8px; align-items: flex-start; background: var(--bad-soft); color: var(--bad); border-radius: var(--r-sm); padding: 10px 12px; font-size: 13.5px; margin-top: 14px; animation: shake .4s; }
 @keyframes shake { 20%, 60% { transform: translateX(-5px); } 40%, 80% { transform: translateX(5px); } }
 .auth-foot { text-align: center; color: var(--ink-3); font-size: 12.5px; margin-top: 18px; }
+.hint-reg { color: var(--ink-3); font-size: 12.5px; margin: -4px 0 14px; line-height: 1.45; }
 .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; animation: rot .7s linear infinite; }
 @keyframes rot { to { transform: rotate(360deg); } }
 
@@ -545,18 +546,24 @@ code.wpw { font: 600 13px var(--mono); color: var(--ink); background: var(--inse
         <b>Baytaar</b>
       </div>
       <h1>Your network,<br><em>from anywhere.</em></h1>
-      <p class="lead">Sign in to see and control your routers.</p>
+      <p class="lead" id="auth-lead">Sign in to see and control your routers.</p>
       <label class="field"><span>Email</span>
         <span class="inp"><svg class="i" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
         <input type="email" id="auth-email" autocomplete="username" inputmode="email" placeholder="you@example.com" required></span></label>
       <label class="field"><span>Password</span>
         <span class="inp"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <input type="password" id="auth-pass" autocomplete="current-password" placeholder="Your password" required></span></label>
+      <label class="field" id="auth-pass2-row" hidden><span>Repeat the password</span>
+        <span class="inp"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <input type="password" id="auth-pass2" autocomplete="new-password" placeholder="Type it again"></span></label>
+      <p class="hint-reg" id="auth-hint" hidden>At least 10 characters. Your routers and settings are private to this account.</p>
+      <!-- bots fill every field; people never see this one -->
+      <input type="text" id="auth-website" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
       <button class="btn primary block" id="auth-btn" type="submit"><span id="auth-lbl">Sign in</span>
         <svg class="i sm go" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
       <div class="err" id="auth-err" hidden></div>
     </form>
-    <p class="auth-foot">Accounts are created by your administrator.</p>
+    <p class="auth-foot"><span id="auth-switch-q">New here?</span> <a href="#" id="auth-switch" style="color:var(--a1);font-weight:700">Create an account</a></p>
   </div>
 </div>
 
@@ -576,7 +583,12 @@ code.wpw { font: 600 13px var(--mono); color: var(--ink); background: var(--inse
     <div class="page-h">
       <div><div class="eyebrow" id="greet">Welcome</div><h1>Your routers</h1><p id="summary">Loading&hellip;</p>
         <div class="sync" id="sync" hidden><i></i><span></span></div></div>
-      <span class="count" id="count" hidden></span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end">
+        <span class="count" id="count" hidden></span>
+        <button class="btn primary sm" id="addrouter" title="Connect a router that runs the Baytaar software">
+          <svg class="i sm" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          Add a router</button>
+      </div>
     </div>
     <div id="appbox"></div>
     <div id="pick"></div>
@@ -732,14 +744,37 @@ function showDash(user) {
   timer = setInterval(function () { if (!document.hidden) load(); }, 10000);
 }
 
+/* Sign in / create account share one card. */
+var registering = false;
+function setAuthMode(reg) {
+  registering = reg;
+  $('#auth-lead').textContent = reg ? 'Create your account, then connect your routers to it.' : 'Sign in to see and control your routers.';
+  $('#auth-lbl').textContent = reg ? 'Create account' : 'Sign in';
+  $('#auth-pass').setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
+  $('#auth-pass').placeholder = reg ? 'At least 10 characters' : 'Your password';
+  $('#auth-pass2-row').hidden = !reg; $('#auth-hint').hidden = !reg;
+  $('#auth-pass2').required = reg;
+  $('#auth-switch-q').textContent = reg ? 'Already have an account?' : 'New here?';
+  $('#auth-switch').textContent = reg ? 'Sign in' : 'Create an account';
+  $('#auth-err').hidden = true;
+}
+$('#auth-switch').addEventListener('click', function (e) { e.preventDefault(); setAuthMode(!registering); });
 $('#auth-form').addEventListener('submit', function (e) {
   e.preventDefault();
   var btn = $('#auth-btn'), lbl = $('#auth-lbl'), err = $('#auth-err');
+  function bad(msg) { err.innerHTML = ic('alert', 'sm') + '<span></span>'; err.lastChild.textContent = msg; err.hidden = false; }
+  var pw = $('#auth-pass').value;
+  if (registering) {
+    if (pw.length < 10) { bad('Use a password of at least 10 characters.'); return; }
+    if (pw !== $('#auth-pass2').value) { bad('The two passwords do not match.'); return; }
+  }
   btn.disabled = true; lbl.innerHTML = '<span class="spin" style="display:inline-block;vertical-align:-3px"></span>'; err.hidden = true;
-  call('portal.php/login', 'POST', { email: $('#auth-email').value, password: $('#auth-pass').value })
-    .then(function (j) { showDash(j.user); })
-    .catch(function (x) { err.innerHTML = ic('alert', 'sm') + '<span></span>'; err.lastChild.textContent = x.message; err.hidden = false; })
-    .then(function () { btn.disabled = false; lbl.textContent = 'Sign in'; });
+  var req = registering
+    ? call('portal.php/register', 'POST', { email: $('#auth-email').value, password: pw, website: $('#auth-website').value })
+    : call('portal.php/login', 'POST', { email: $('#auth-email').value, password: pw });
+  req.then(function (j) { $('#auth-pass2').value = ''; showDash(j.user); if (registering) { setAuthMode(false); setTimeout(addRouterDialog, 400); } })
+    .catch(function (x) { bad(x.message); })
+    .then(function () { btn.disabled = false; lbl.textContent = registering ? 'Create account' : 'Sign in'; });
 });
 $('#signout').addEventListener('click', function () {
   if (APP) { try { APP.signedOut(); } catch (e) {} }
@@ -897,9 +932,9 @@ function pickRouter(list) {
 function render(list, now) {
   var box = $('#routers'), count = $('#count');
   if (!list.length) {
-    $('#summary').textContent = 'Nothing is assigned to this account yet.';
+    $('#summary').textContent = 'No routers connected yet.';
     count.hidden = true;
-    box.innerHTML = '<div class="glass empty">' + ic('inbox') + '<div>No router is assigned to this account.<br>Ask your administrator to assign one.</div></div>';
+    box.innerHTML = '<div class="glass empty">' + ic('inbox') + '<div>No router is connected to this account yet.<br>Press <b>Add a router</b> to get your key, then enter it on your router.</div></div>';
     return;
   }
   var up = list.filter(function (r) { return r.reachable && r.site && r.site.internet; }).length;
@@ -1080,6 +1115,7 @@ function card(r, now, animate) {
     '<div class="glass block" data-fw="' + r.id + '"></div>' +
     '<div class="glass block" data-wifi="' + r.id + '">' + wifiHtml(r.id) + '</div>' +
     sshBlock(r) +
+    '<div class="glass block" data-compat="' + r.id + '"></div>' +
 
     '<div class="actions">' +
       '<a class="glass act-card" data-open="easy.html"' + (r.reachable ? '' : ' aria-disabled="true"') + '><div class="f-ico">' + ic('zap') + '</div>' +
@@ -1114,7 +1150,158 @@ function askConfirm(o) {
   });
 }
 
+// "Add a router": your account's API key. One key works on any number of routers. On each router you
+// enter this website's address and the key (Remote access page, or the command below) and it joins
+// your account by itself. Keys are listed here and can be revoked; a key is shown in full only once.
+function addRouterDialog() {
+  var wrap = document.createElement('div');
+  wrap.setAttribute('role', 'dialog'); wrap.setAttribute('aria-modal', 'true');
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(10,14,20,.55)';
+  wrap.innerHTML = '<div class="glass" style="max-width:540px;width:100%;padding:20px 22px;border-radius:16px;max-height:90vh;overflow:auto">' +
+    '<h3 style="margin:0 0 6px;font-size:18px">Connect your routers</h3>' +
+    '<div data-body></div></div>';
+  var body = wrap.querySelector('[data-body]');
+  function close() { document.removeEventListener('keydown', onkey); wrap.remove(); }
+  function onkey(e) { if (e.key === 'Escape') close(); }
+  wrap.addEventListener('click', function (e) { if (e.target === wrap) close(); });
+  document.addEventListener('keydown', onkey);
+
+  function copyBox(label, text) {
+    var box = document.createElement('div');
+    box.style.cssText = 'margin:0 0 12px';
+    box.innerHTML = '<div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;opacity:.7;margin-bottom:4px"></div>' +
+      '<div style="display:flex;gap:8px;align-items:stretch"><code style="flex:1;word-break:break-all;padding:10px 12px;border-radius:10px;background:rgba(15,23,42,.07);font-size:13px;line-height:1.45"></code>' +
+      '<button class="btn sm" type="button">Copy</button></div>';
+    box.firstChild.textContent = label;
+    box.querySelector('code').textContent = text;
+    var cb = box.querySelector('button');
+    cb.onclick = function () {
+      var done = function () { cb.textContent = 'Copied'; setTimeout(function () { cb.textContent = 'Copy'; }, 1500); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast('Select the text and copy it by hand.', true); });
+      else toast('Select the text and copy it by hand.', true);
+    };
+    return box;
+  }
+  function when(ts) { return ts ? new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : 'never'; }
+
+  function list() {
+    body.innerHTML = '<p style="margin:0 0 12px;font-size:14px;line-height:1.5">Make a key, then on each router enter this website’s address and the key. ' +
+      'The <b>same key works on every router you own</b>; each one joins your account by itself and shows up here.</p>' +
+      '<div data-keys style="margin:0 0 14px"><div style="opacity:.6;font-size:13px">Loading your keys…</div></div>' +
+      '<div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;opacity:.7;margin-bottom:6px">New key</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" data-label maxlength="40" placeholder="Name it, e.g. School routers" style="flex:1;min-width:180px;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:15px">' +
+      '<button class="btn primary" data-make>Create key</button></div>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:16px"><button class="btn" data-done>Close</button></div>';
+    body.querySelector('[data-done]').onclick = close;
+    var make = body.querySelector('[data-make]'), lab = body.querySelector('[data-label]');
+    make.onclick = function () {
+      make.disabled = true; make.textContent = 'Creating…';
+      call('portal.php/api-keys', 'POST', { label: lab.value.trim() }).then(showKey)
+        .catch(function (e) { make.disabled = false; make.textContent = 'Create key'; toast(e.message, true); });
+    };
+    lab.onkeydown = function (e) { if (e.key === 'Enter') make.click(); };
+    call('portal.php/api-keys').then(function (j) {
+      var box = body.querySelector('[data-keys]');
+      if (!j.keys.length) { box.innerHTML = '<div style="opacity:.65;font-size:13px">You have no keys yet.</div>'; return; }
+      box.innerHTML = '';
+      j.keys.forEach(function (k) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid rgba(100,116,139,.2)';
+        row.innerHTML = '<div style="flex:1;min-width:0"><b data-l></b><div style="font-size:12.5px;opacity:.7" data-m></div></div><button class="btn sm" data-rev>Revoke</button>';
+        row.querySelector('[data-l]').textContent = k.label;
+        row.querySelector('[data-m]').textContent = k.prefix + '…  ·  ' + k.routers + (k.routers === 1 ? ' router' : ' routers') + ' joined  ·  last used ' + when(k.last_used);
+        row.querySelector('[data-rev]').onclick = function () {
+          askConfirm({ title: 'Revoke this key?', html: 'Routers that already joined keep working. This key just cannot connect any more routers.', ok: 'Revoke' }).then(function (yes) {
+            if (!yes) return;
+            call('portal.php/api-keys/revoke', 'POST', { id: k.id }).then(list).catch(function (e) { toast(e.message, true); });
+          });
+        };
+        box.appendChild(row);
+      });
+    }).catch(function (e) { body.querySelector('[data-keys]').textContent = e.message; });
+  }
+
+  function showKey(j) {
+    body.innerHTML = '<p style="margin:0 0 12px;font-size:14px;line-height:1.5">Key <b></b> is ready. It is shown in full <b>only now</b>, so copy it. On each router, open <b>Remote Access</b> in its panel, enter these two things and press Connect:</p>';
+    body.querySelector('b').textContent = j.label;
+    body.appendChild(copyBox('Website address', j.site));
+    body.appendChild(copyBox('API key', j.key));
+    var alt = document.createElement('details');
+    alt.style.cssText = 'margin:0 0 12px;font-size:13px';
+    alt.innerHTML = '<summary style="cursor:pointer;opacity:.8">Or paste one command over SSH</summary>';
+    alt.appendChild(copyBox('Command', j.command));
+    body.appendChild(alt);
+    var note = document.createElement('p');
+    note.style.cssText = 'margin:0 0 4px;font-size:13px;line-height:1.5;opacity:.85';
+    note.textContent = 'Use it on as many routers as you like. Each one appears in your list within about a minute. Anyone with this key can add routers to your account, so keep it private; if it leaks, revoke it here.';
+    body.appendChild(note);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:flex-end;margin-top:14px';
+    row.innerHTML = '<button class="btn primary">Done</button>';
+    row.firstChild.onclick = function () { close(); lastKey = null; load(); };
+    body.appendChild(row);
+  }
+
+  list();
+  document.body.appendChild(wrap);
+}
+/* This router: what it can do with this website, rename, remove. The router says what it supports
+   (portal.php/capabilities); anything it or the website lacks is listed with the side to update. */
+var COMPAT = {};
+function paintCompat(r) {
+  var el = $('[data-compat="' + r.id + '"]'); if (!el) return;
+  var hit = COMPAT[r.id];
+  if (hit) draw(hit.j);
+  else el.innerHTML = '<div class="sec-h"><h3>' + ic('sliders') + 'This router</h3></div><p class="mix-note">Checking what it can do…</p>';
+  if (!hit || Date.now() - hit.t > 300000) fetchCaps(false);
+
+  function fetchCaps(force) {
+    call('portal.php/capabilities?r=' + r.id + (force ? '&refresh=1' : '')).then(function (j) {
+      COMPAT[r.id] = { t: Date.now(), j: j };
+      var again = $('[data-compat="' + r.id + '"]'); if (again) { el = again; draw(j); }
+    }).catch(function () {});
+  }
+  function draw(j) {
+    var state = { ok: ['Works', 'ok'], update_router: ['Update the router', 'mid'], update_website: ['Update the website', 'mid'], unavailable: ['Not on this router', 'bad'], unknown: ['Not checked', 'mid'] };
+    var rows = (j.features || []).filter(function (f) { return f.state !== 'ok'; });
+    var head = !j.known ? 'Not reachable right now, so what it can do is not known yet.' : j.message;
+    var good = j.known && j.compatible;
+    var h = '<div class="sec-h"><h3>' + ic('sliders') + 'This router</h3>' +
+      '<span class="tag ' + (good ? 'ok' : (j.known ? 'mid' : 'bad')) + '">' + (good ? 'Fully compatible' : (j.known ? 'Some limits' : 'Unknown')) + '</span></div>' +
+      '<p class="mix-note">' + esc(head) + (j.software ? ' <span style="opacity:.7">Router software ' + esc(j.software) + '.</span>' : '') + '</p>';
+    if (rows.length) {
+      h += '<div style="margin:6px 0 10px">' + rows.map(function (f) {
+        var s = state[f.state] || state.unknown;
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-top:1px solid rgba(100,116,139,.18);font-size:13.5px">' +
+          '<span class="tag ' + s[1] + '" style="flex:none">' + esc(s[0]) + '</span><span><b>' + esc(f.label) + '</b>' + (f.message ? '<br><span style="opacity:.8">' + esc(f.message) + '</span>' : '') + '</span></div>';
+      }).join('') + '</div>';
+    }
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' +
+      '<button class="btn sm" data-cp-recheck>Check again</button>' +
+      '<button class="btn sm" data-cp-rename>' + ic('pencil', 'sm') + 'Rename</button>' +
+      '<button class="btn sm" data-cp-remove>Remove from my account</button></div>' +
+      '<div data-cp-edit hidden style="display:none;gap:8px;margin-top:10px"><input type="text" maxlength="60" data-cp-name value="' + esc(r.name) + '" style="flex:1;box-sizing:border-box;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"><button class="btn primary sm" data-cp-save>Save</button></div>';
+    el.innerHTML = h;
+    el.querySelector('[data-cp-recheck]').onclick = function () { this.disabled = true; this.textContent = 'Checking…'; fetchCaps(true); };
+    var edit = el.querySelector('[data-cp-edit]');
+    el.querySelector('[data-cp-rename]').onclick = function () { var on = edit.style.display === 'none'; edit.style.display = on ? 'flex' : 'none'; edit.hidden = !on; if (on) el.querySelector('[data-cp-name]').focus(); };
+    el.querySelector('[data-cp-save]').onclick = function () {
+      var nm = el.querySelector('[data-cp-name]').value.trim(); if (!nm) return;
+      call('portal.php/router-rename', 'POST', { id: r.id, name: nm }).then(function () { toast('Renamed.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
+    };
+    el.querySelector('[data-cp-remove]').onclick = function () {
+      askConfirm({ title: 'Remove ' + (r.name || 'this router') + '?',
+        html: 'It disappears from your account and its history here is deleted. The router itself keeps working; it just stops reporting to this website. You can connect it again with your key.', ok: 'Remove' }).then(function (yes) {
+        if (!yes) return;
+        call('portal.php/router-remove', 'POST', { id: r.id }).then(function () { toast('Removed.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
+      });
+    };
+  }
+}
+$('#addrouter').onclick = addRouterDialog;
+
 function wire(r, locOpen) {
+  paintCompat(r);
   var el = $('[data-router="' + r.id + '"]'); if (!el) return;
   var base = 'api.php/r/' + r.id;
   function post(route, body, okMsg, after) {

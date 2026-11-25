@@ -12,6 +12,7 @@
 // assigned to that router. The router's own password is never asked for here;
 // this relay presents the router's portal token on the caller's behalf.
 require __DIR__ . '/../portal/lib.php';
+require __DIR__ . '/../portal/caps_lib.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method === 'OPTIONS') { http_response_code(204); exit; }
@@ -41,11 +42,20 @@ if (!$router) fail(403, 'This router is not assigned to your account.');
 $query = clean_query($_SERVER['QUERY_STRING'] ?? '');
 $body  = $method === 'POST' ? read_json_body() : null;
 
+// A call the router's software or hardware cannot take is refused here, with the side to update named.
+// (Uses what the router last said it can do; the dashboard refreshes that. Routers too old to say are not gated.)
+if ($route !== '/capabilities') {
+    $refuse = caps_gate($router, $route);
+    if ($refuse) json_out(200, $refuse);
+}
+
 $res = router_call($router, $route, $method, $query, $body);
 if ($res === null) {
     fail(502, 'The router is offline, or its tunnel to this server is not connected.');
 }
 [$code, $ctype, $payload, $disp] = $res;
+// An old router answers a route it lacks with a bare "No such endpoint": say what that means.
+if (stripos($ctype, 'json') !== false && ($t = caps_translate_reply($payload)) !== null) { $payload = $t; $code = 200; }
 
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('X-Content-Type-Options: nosniff');

@@ -2011,8 +2011,15 @@ views.vpn = function () {
 /* ======================= Remote Access ======================= */
 
 views.remote = function () {
-  Promise.all([api('/remote'), api('/firewall'), api('/status')]).then(function (results) {
-    var r = results[0], fw = results[1], st = results[2];
+  Promise.all([api('/remote'), api('/firewall'), api('/status'), api('/connect').catch(function () { return {}; })]).then(function (results) {
+    var r = results[0], fw = results[1], st = results[2], cn = results[3] || {};
+    var cnLine = cn.connected
+      ? '<div class="alert alert-info"><strong>Connected</strong> to <b>' + esc(cn.site || 'a website') + '</b>' +
+        (cn.router_name ? ' as <b>' + esc(cn.router_name) + '</b>' : '') + '. The website can see this router and open this panel.' +
+        (cn.uploads_failing ? ' <span class="badge warn">uploads are failing right now</span>' : '') + '</div>' +
+        (cn.web_level !== null && cn.web_level !== undefined && Number(cn.web_level) < 1 ? '<div class="alert alert-warn"><strong>The website is older than this router\'s software.</strong> ' +
+          'Some things may not show there. Please update the website.</div>' : '')
+      : '<div class="alert alert-warn">Not connected to a website.</div>';
     var adminPort = fw.admin_wan_port || '8443';
     var wanRows = (st.wans || []).map(function (w) {
       var priv = isPrivateIPv4(w.address);
@@ -2032,7 +2039,17 @@ views.remote = function () {
         '<td>' + status + '</td>' +
         '<td style="font-size:12.5px">' + action + '</td></tr>';
     }).join('') || '<tr><td colspan="4" class="empty">No WAN addresses known yet.</td></tr>';
-    page('Remote Access', 'Two ways to reach this admin panel over the internet.',
+    page('Remote Access', 'Reach this admin panel from anywhere.',
+      '<div class="page-head"><h3>Connect to your website account</h3></div>' +
+      '<div class="card"><div class="card-body" id="cn-card">' + cnLine +
+        '<p class="hint" style="margin-top:0">Sign in on your website, press <b>Add a router</b>, and copy the address and the key. ' +
+        'The same key works on every router you own; each one joins your account on its own. Nothing else to set up.</p>' +
+        '<div class="form-row">' + f('cn-site', 'Website address', cn.site || '') +
+        '<label class="field"><span>API key</span><input type="password" id="cn-key" autocomplete="off" spellcheck="false" placeholder="bu…"></label></div>' +
+        '<button class="btn btn-primary" id="cn-go">' + (cn.connected ? 'Connect to this website instead' : 'Connect') + '</button>' +
+        '<p class="hint" id="cn-msg" style="margin-top:10px"></p>' +
+      '</div></div>' +
+      '<div class="page-head" style="margin-top:22px"><h3>Other ways in</h3></div>' +
       '<div class="alert alert-info"><strong>Method 1 — relay tunnel (below): </strong>outbound-only, ' +
         'the router is never directly reachable, but needs a relay host and a one-time setup step there. ' +
         '<strong>Method 2 — direct port forward (bottom of this page): </strong>simpler, no relay host, but ' +
@@ -2099,6 +2116,20 @@ views.remote = function () {
         '</div></div>');
 
     pollRemote();
+
+    $('#cn-go').onclick = function () {
+      var site = $('#cn-site').value.trim(), key = $('#cn-key').value.trim(), msg = $('#cn-msg'), btn = $('#cn-go');
+      if (!site || !key) { msg.textContent = 'Enter the website address and the key.'; return; }
+      var go = cn.connected ? confirmModal('Move this router to another website?',
+        'It will stop reporting to <b>' + esc(cn.site || 'the current website') + '</b> and join the new one.', 'Move it', true) : Promise.resolve(true);
+      go.then(function (ok) {
+        if (!ok) return;
+        btn.disabled = true; msg.textContent = 'Connecting…';
+        api('/connect', { method: 'POST', body: { site: site, key: key, replace: cn.connected ? 'replace' : '' } })
+          .then(function (rr) { toast(rr.message || 'Connected.', 'ok'); views.remote(); })
+          .catch(function (e) { btn.disabled = false; msg.textContent = ''; toast(e.message, 'error'); });
+      });
+    };
 
     $('#remote-gen').onclick = function () {
       var go = r.has_key ? confirmModal('Regenerate the key pair?',
