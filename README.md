@@ -1,3 +1,5 @@
+> **LEGACY VERSION.** This is the first, router-only version of the project. It has the older, weaker interface, has no online checking (no website portal, no outage alerts), and may not work on newer hardware. The current version is on the [`main`](../../tree/main) branch. This branch is kept for reference and for older hardware.
+
 # MultiWAN — TP-Link Archer C6 v3.20 → OpenWrt Multi-WAN Gateway
 
 Priority-based 3-WAN failover gateway with a custom admin UI, built for the
