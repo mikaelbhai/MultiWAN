@@ -11,6 +11,7 @@ if (!preg_match('/^[a-f0-9]{48,128}$/', $tok)) fail(401, 'Bad token.');
 $st = db()->prepare('SELECT id FROM routers WHERE token = ?');
 $st->execute([$tok]);
 $rid = (int) ($st->fetchColumn() ?: 0);
+$st->closeCursor();   // a half-read SELECT would keep a read snapshot open and make later writes fail with "database is locked"
 if (!$rid) { usleep(300000); fail(401, 'Unknown router.'); }
 $pdo = relay_db();
 $seen = $pdo->prepare('INSERT INTO relay_seen (router_id, ts) VALUES (?, ?) ON CONFLICT (router_id) DO UPDATE SET ts = excluded.ts');

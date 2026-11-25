@@ -13,6 +13,10 @@ $pdo = act_db();
 $st = $pdo->prepare('SELECT id FROM routers WHERE token = ?');
 $st->execute([$tok]);
 $r = $st->fetch();
+// A half-read SELECT keeps a read snapshot open. If anything else writes to the database before
+// this upload does, the upload's own write then fails at once with "database is locked" (found
+// 2026-11-25: a failed upload every few minutes, which looked like the router going silent).
+$st->closeCursor();
 if (!$r) { usleep(300000); fail(401, 'Unknown router.'); }
 $rid = (int) $r['id'];
 
@@ -33,8 +37,9 @@ function ingest_log(string $m): void {
     @file_put_contents($f, date('Y-m-d H:i:s ') . $m . "\n", FILE_APPEND);
 }
 $t0 = microtime(true);
+for ($attempt = 1; ; $attempt++) {
 try {
-$pdo->beginTransaction();
+$pdo->exec('BEGIN IMMEDIATE');     // take the write lock now and wait for it, rather than failing at the first write
 $ie = $pdo->prepare('INSERT OR IGNORE INTO events (router_id, ts, kind, sev, msg) VALUES (?, ?, ?, ?, ?)');
 $ne = 0;
 foreach (array_slice((array) ($b['events'] ?? []), 0, 2000) as $e) {
@@ -58,13 +63,16 @@ foreach (array_slice((array) ($b['activity'] ?? []), 0, 60000) as $a) {
     elseif ($a[0] === 'u')            { $iu->execute([$rid, $ts, $mac, $ip, $name, $clip($a[5], 64), (int) $a[6]]); $na++; }
 }
 $pdo->prepare('UPDATE routers SET last_seen = ? WHERE id = ?')->execute([time(), $rid]);
-$pdo->commit();
+$pdo->exec('COMMIT');
+break;
 } catch (Throwable $t) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
+    try { if ($pdo->inTransaction()) $pdo->exec('ROLLBACK'); } catch (Throwable $x) {}
+    if ($attempt < 4 && stripos($t->getMessage(), 'locked') !== false) { usleep(250000 * $attempt); continue; }
     ingest_log(sprintf('router %d: %s: %s (at %s:%d) after %.1f s; upload had %d events, %d activity rows',
         $rid, get_class($t), $t->getMessage(), basename($t->getFile()), $t->getLine(), microtime(true) - $t0,
         count((array) ($b['events'] ?? [])), count((array) ($b['activity'] ?? []))));
     fail(503, 'Could not store that upload. The router keeps it and tries again.');
+}
 }
 if (microtime(true) - $t0 > 10) ingest_log(sprintf('router %d: slow upload, %.1f s (%d events, %d activity rows)', $rid, microtime(true) - $t0, $ne, $na));
 if (random_int(1, 300) === 1) act_prune($pdo);
