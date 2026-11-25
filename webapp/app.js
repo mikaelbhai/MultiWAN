@@ -244,13 +244,15 @@ try {
 function pollStatus() {
   api('/status').then(function (s) {
     var badge = $('#mode-badge');
-    badge.textContent = s.mode === 'ap' ? 'Access Point' : 'Router';
+    badge.textContent = modeName(s.mode);
     badge.className = 'mode-badge ' + (s.mode === 'ap' ? 'ap' : 'router');
 
     var chip = $('#active-wan-chip'), lbl = $('#active-wan-label');
     var actives = s.active_wans || (s.active_wan && s.active_wan !== 'none' ? [s.active_wan] : []);
     if (s.mode === 'ap') {
       chip.className = 'active-wan'; lbl.textContent = 'Bridged';
+    } else if (s.mode === 'router2') {
+      chip.className = 'active-wan up'; lbl.textContent = 'Router 2: one uplink';
     } else if (actives.length > 1) {
       chip.className = 'active-wan up';
       lbl.textContent = actives.map(function (w) { return w.toUpperCase(); }).join(' + ') + ' sharing load';
@@ -265,8 +267,9 @@ function pollStatus() {
     var rb = $('#rollback-bar');
     if (s.rollback && s.rollback.pending) {
       rb.hidden = false;
-      $('#rb-target').textContent = s.rollback.revert_to === 'ap' ? 'Access Point mode' :
-        s.rollback.revert_to === 'router' ? 'Router mode' : 'the previous LAN settings';
+      $('#rb-target').textContent = s.rollback.revert_to === 'ap' ? 'Router 2 (DHCP off)' :
+        s.rollback.revert_to === 'router2' ? 'Router 2' :
+        s.rollback.revert_to === 'router' ? 'the main router' : 'the previous LAN settings';
       $('#rb-seconds').textContent = s.rollback.seconds_remaining;
     } else { rb.hidden = true; }
 
@@ -780,7 +783,9 @@ function renderStatusInto(s) {
     var actives = s.active_wans || (s.active_wan && s.active_wan !== 'none' ? [s.active_wan] : []);
     var upVal, upSub, upTone;
     if (s.mode === 'ap') {
-      upVal = 'Bridged'; upSub = 'Access Point mode'; upTone = '';
+      upVal = 'Bridged'; upSub = 'Router 2, DHCP off'; upTone = '';
+    } else if (s.mode === 'router2') {
+      upVal = 'WAN1'; upSub = 'Router 2: one uplink, no failover'; upTone = '';
     } else if (actives.length > 1) {
       upVal = actives.map(function (w) { return w.toUpperCase(); }).join(' + ');
       upSub = 'sharing load across ' + actives.length + ' uplinks';
@@ -796,7 +801,7 @@ function renderStatusInto(s) {
       tile('Active uplink', upVal, upSub, upTone) +
       tile('Sharing mode', s.mwan_mode === 'balance' ? 'Load balance' : 'Priority failover',
            s.mwan_mode === 'balance' ? 'multiple WANs share traffic' : 'one WAN at a time', '') +
-      tile('Mode', s.mode === 'ap' ? 'Access Point' : 'Router', s.mode === 'ap' ? 'routing disabled' : 'multi-WAN active', '') +
+      tile('Mode', modeName(s.mode), s.mode === 'ap' ? 'routing disabled' : (s.mode === 'router2' ? 'own network, one uplink' : 'multi-WAN active'), '') +
       tile('Uptime', fmtUptime(s.uptime_s), 'load ' + esc(s.load1), '') +
       tile('Memory', memUsed + '%', fmtBytes(s.mem_avail_kb * 1024) + ' available', memUsed > 85 ? 'warn' : '');
   }
@@ -804,7 +809,7 @@ function renderStatusInto(s) {
   var w = $('#dash-wans');
   if (w) {
     if (s.mode === 'ap') {
-      w.innerHTML = '<div class="empty">The device is in Access Point mode. WAN interfaces are not configured.</div>';
+      w.innerHTML = '<div class="empty">The device is in Router 2 mode with DHCP off. It is bridged onto Router 1, so it has no WAN interfaces of its own.</div>';
       return;
     }
     w.innerHTML = (s.wans || []).map(function (x, i) {
@@ -2359,86 +2364,101 @@ views.diagnostics = function () {
 
 /* ======================= operating mode ======================= */
 
+// "ap" is the old access point mode, now Router 2 with DHCP off (joins Router 1’s network).
+function modeName(m) { return m === 'ap' ? 'Router 2 (DHCP off)' : (m === 'router2' ? 'Router 2' : 'Main router'); }
+
 views.mode = function () {
   var s = window.__status || {};
-  var isAp = s.mode === 'ap';
+  var mode = s.mode || 'router';
+  var isMain = mode === 'router';
+  var dhcpOn = mode !== 'ap';        // the form starts at what is running now (main router: DHCP on)
 
-  page('Operating mode', 'Switch between full gateway and dumb access point.',
+  var desc = mode === 'router2'
+    ? 'Router 2 with its own network. It has one uplink (plugged into Router 1), gives out its own addresses (DHCP), and runs NAT and a firewall. No multi-WAN.'
+    : mode === 'ap'
+    ? 'Router 2 with DHCP off. All ports are bridged together and the device joins Router 1’s network: it does not route, and Router 1 gives every device its address.'
+    : 'Main router: multi-WAN gateway. Three uplinks with priority failover, NAT, firewall, and a DHCP server on the LAN.';
+
+  page('Operating mode', 'Main router, or Router 2 behind it.',
     '<div class="card"><div class="card-head"><div><h3>Current mode</h3></div>' +
-      '<span class="mode-badge ' + (isAp ? 'ap' : 'router') + '">' + (isAp ? 'Access Point' : 'Router') + '</span>' +
-      '</div><div class="card-body">' +
-      (isAp
-        ? '<p style="font-size:13.5px;color:var(--text-dim)">All ports are bridged together. The device does not ' +
-          'route, does not run NAT or a firewall, and does not hand out addresses. Wired and wireless clients ' +
-          'are ordinary hosts on the upstream router\'s network.</p>'
-        : '<p style="font-size:13.5px;color:var(--text-dim)">Full multi-WAN gateway. Three uplinks with priority ' +
-          'failover, NAT, firewall, and a DHCP server on the LAN.</p>') +
-      '</div></div>' +
+      '<span class="mode-badge ' + (mode === 'ap' ? 'ap' : 'router') + '">' + esc(modeName(mode)) + '</span>' +
+      '</div><div class="card-body"><p style="font-size:13.5px;color:var(--text-dim)">' + esc(desc) + '</p></div></div>' +
 
-    '<div class="alert alert-info"><strong>Your configuration is preserved either way.</strong>' +
-      'Switching to Access Point mode saves the entire multi-WAN setup to flash first. Switching back restores it ' +
-      'exactly, with no reconfiguration.</div>' +
+    '<div class="alert alert-info"><strong>Your configuration is preserved either way.</strong> ' +
+      'Making this device Router 2 saves the main-router setup (lines, rules, everything) to flash first. ' +
+      'Returning to the main router restores it exactly, with no reconfiguration.</div>' +
 
-    '<div class="alert alert-warn"><strong>Every mode change is protected by a 90-second rollback.</strong>' +
-      'After switching, you must reconnect and press <em>Keep this configuration</em> in the bar at the top of the ' +
-      'page. If you do not — because the switch left the device unreachable — it restores the previous ' +
-      'configuration and reboots on its own. You cannot lock yourself out with this button.</div>' +
+    '<div class="alert alert-warn"><strong>Router 2 has not yet been tried on a real second router.</strong> ' +
+      'The settings it applies were checked on a copy only. Every change is protected by a 90-second rollback: ' +
+      'reconnect and press <em>Keep this configuration</em> in the bar at the top, or the device restores what it had and restarts.</div>' +
 
-    (isAp
-      ? '<div class="card"><div class="card-head"><h3>Return to Router mode</h3></div><div class="card-body">' +
-        '<p style="font-size:13.5px;color:var(--text-dim);margin-bottom:14px">Restores your saved multi-WAN ' +
-        'configuration, re-enables the firewall and DHCP, and restarts failover tracking.</p>' +
-        '<button class="btn btn-primary" id="to-router">Switch to Router mode</button></div></div>'
-      : '<div class="card"><div class="card-head"><h3>Switch to Access Point mode</h3></div><div class="card-body">' +
-        '<label class="switch"><input type="checkbox" id="ap-bridge-all" checked><span class="track"></span>' +
-        '<span>Bridge all five ports, including the WAN ports</span></label>' +
-        '<p class="hint">Leave this on to use every port as a LAN port. Turn it off to keep the WAN ports unused, ' +
-        'which makes switching back simpler.</p>' +
-        '<label class="field"><span>Address on the upstream network</span><select id="ap-proto">' +
-        '<option value="dhcp">Obtain automatically (DHCP)</option>' +
-        '<option value="static">Set manually</option></select></label>' +
-        '<div id="ap-static" hidden><div class="form-row">' +
-        f('ap-ip', 'IP address', '192.168.1.2') + f('ap-mask', 'Subnet mask', '255.255.255.0') +
-        f('ap-gw', 'Upstream router', '192.168.1.1') + '</div></div>' +
-        '<button class="btn btn-danger" id="to-ap">Switch to Access Point mode</button></div></div>'));
+    '<div class="card"><div class="card-head"><h3>' + (isMain ? 'Make this device Router 2' : 'Router 2 settings') + '</h3></div><div class="card-body">' +
+      '<label class="switch"><input type="checkbox" id="r2-dhcp"' + (dhcpOn ? ' checked' : '') + '><span class="track"></span>' +
+      '<span>Give out addresses (DHCP)</span></label>' +
+      '<p class="hint">On: Router 2 has its own network and hands out its own addresses. Off: it joins Router 1’s network and Router 1 hands out the addresses.</p>' +
+      '<div id="r2-on">' +
+        '<div class="form-row">' + f('r2-ip', 'Router 2 network address', '192.168.2.1') + f('r2-mask', 'Subnet mask', '255.255.255.0') + '</div>' +
+        '<p class="hint">Must differ from Router 1’s network (Router 1 is normally 192.168.1.x).</p>' +
+      '</div>' +
+      '<div id="r2-off" hidden>' +
+        '<label class="field"><span>Address on Router 1’s network</span><select id="r2-proto">' +
+        '<option value="dhcp">Obtain automatically (DHCP)</option><option value="static">Set manually</option></select></label>' +
+        '<div id="r2-static" hidden><div class="form-row">' +
+        f('r2-sip', 'IP address', '192.168.1.2') + f('r2-smask', 'Subnet mask', '255.255.255.0') + f('r2-sgw', 'Router 1', '192.168.1.1') +
+        '</div></div>' +
+      '</div>' +
+      '<label class="switch" style="margin-top:12px"><input type="checkbox" id="r2-bridge" checked><span class="track"></span>' +
+      '<span>Use the spare line ports as LAN ports too</span></label>' +
+      '<button class="btn btn-danger" id="r2-go" style="margin-top:14px">' + (isMain ? 'Make this device Router 2' : 'Apply change') + '</button>' +
+    '</div></div>' +
 
-  if (!isAp) {
-    $('#ap-proto').onchange = function () { $('#ap-static').hidden = this.value !== 'static'; };
-    $('#to-ap').onclick = function () {
-      confirmModal('Switch to Access Point mode?',
-        '<p><strong>This stops the device routing entirely.</strong></p>' +
-        '<ul style="margin:10px 0 0 18px">' +
-        '<li>Multi-WAN failover stops. All three uplink configurations are saved, not deleted.</li>' +
-        '<li>The firewall and NAT are disabled.</li>' +
-        '<li>The DHCP server is switched off — the upstream router must provide one.</li>' +
-        '<li>Wi-Fi keeps broadcasting, bridged onto the upstream network.</li>' +
-        '<li>This device\'s address will change to whatever the upstream router assigns.</li></ul>' +
-        '<p style="margin-top:12px">You have 90 seconds after the switch to reconnect and confirm, ' +
-        'or it reverts automatically.</p>',
-        'Switch to AP mode').then(function (go) {
-        if (!go) return;
-        api('/mode/ap', { method: 'POST', body: {
-          bridge_all: $('#ap-bridge-all').checked ? '1' : '0',
-          proto: $('#ap-proto').value, ipaddr: $('#ap-ip') ? $('#ap-ip').value : '',
-          netmask: $('#ap-mask') ? $('#ap-mask').value : '', gateway: $('#ap-gw') ? $('#ap-gw').value : ''
-        }}).then(function (r) {
-          toast(r.message, 'ok');
-          $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' +
-            'Applying Access Point mode. Reconnect to the device at its new address, then confirm within 90 seconds.</div>';
-        }).catch(function (e) { toast(e.message, 'error'); });
-      });
-    };
-  } else {
+    (isMain ? '' :
+      '<div class="card"><div class="card-head"><h3>Return to the main router</h3></div><div class="card-body">' +
+      '<p style="font-size:13.5px;color:var(--text-dim);margin-bottom:14px">Restores your saved multi-WAN configuration, ' +
+      're-enables the firewall and DHCP, and restarts failover tracking.</p>' +
+      '<button class="btn btn-primary" id="to-router">Switch back to the main router</button></div></div>'));
+
+  function sync() {
+    var on = $('#r2-dhcp').checked;
+    $('#r2-on').hidden = !on; $('#r2-off').hidden = on;
+  }
+  $('#r2-dhcp').onchange = sync; sync();
+  $('#r2-proto').onchange = function () { $('#r2-static').hidden = this.value !== 'static'; };
+
+  $('#r2-go').onclick = function () {
+    var on = $('#r2-dhcp').checked;
+    confirmModal(isMain ? 'Make this device Router 2?' : 'Apply this change?',
+      '<p><strong>' + (on ? 'Router 2 will have its own network.' : 'Router 2 will join Router 1’s network.') + '</strong></p>' +
+      '<ul style="margin:10px 0 0 18px">' +
+      (isMain ? '<li>Multi-WAN failover stops here. The main-router setup is saved, not deleted.</li>' : '') +
+      (on ? '<li>Its address becomes ' + esc($('#r2-ip').value) + '. Reconnect to that address.</li>'
+          : '<li>The DHCP server is switched off and the firewall and NAT are disabled.</li><li>Its address becomes whatever Router 1 assigns.</li>') +
+      '</ul><p style="margin-top:12px">You have 90 seconds to reconnect and confirm, or it reverts automatically.</p>',
+      'Apply').then(function (go) {
+      if (!go) return;
+      api('/mode/router2', { method: 'POST', body: {
+        dhcp: on ? '1' : '0', lan_ip: $('#r2-ip').value, lan_mask: $('#r2-mask').value,
+        bridge_all: $('#r2-bridge').checked ? '1' : '0', proto: $('#r2-proto').value,
+        ipaddr: $('#r2-sip').value, netmask: $('#r2-smask').value, gateway: $('#r2-sgw').value
+      }}).then(function (r) {
+        toast(r.message, 'ok');
+        $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' +
+          'Applying. Reconnect to the device at its new address, then confirm within 90 seconds.</div>';
+      }).catch(function (e) { toast(e.message, 'error'); });
+    });
+  };
+
+  if (!isMain) {
     $('#to-router').onclick = function () {
-      confirmModal('Return to Router mode?',
+      confirmModal('Return to the main router?',
         '<p>Your saved multi-WAN configuration will be restored and failover tracking will restart.</p>' +
         '<p style="margin-top:10px">The device returns to its own LAN subnet, so you will need to reconnect ' +
-        'and confirm within 90 seconds.</p>', 'Switch to Router mode', false).then(function (go) {
+        'and confirm within 90 seconds.</p>', 'Switch back', false).then(function (go) {
         if (!go) return;
         api('/mode/router', { method: 'POST' }).then(function (r) {
           toast(r.message, 'ok');
           $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' +
-            'Restoring Router mode. Reconnect and confirm within 90 seconds.</div>';
+            'Restoring the main router. Reconnect and confirm within 90 seconds.</div>';
         }).catch(function (e) { toast(e.message, 'error'); });
       });
     };

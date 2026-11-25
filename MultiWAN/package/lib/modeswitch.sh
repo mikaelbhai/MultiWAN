@@ -37,6 +37,11 @@ TIMER_FILE="$MW_RUN/mode-timer"
 
 CONFIGS="network firewall dhcp wireless mwan3 system"
 
+# Dry run ("preview"): MW_DRY=1 MW_UCI_DIR=<copy of /etc/config> edits only that copy, starts and stops
+# nothing and writes no mode file, so a mode change can be inspected without touching the running router.
+uci() { command uci ${MW_UCI_DIR:+-c "$MW_UCI_DIR"} "$@"; }
+svc() { [ -n "$MW_DRY" ] || "$@"; }
+
 current_mode() {
     if [ -f "$MODE_FILE" ]; then
         cat "$MODE_FILE"
@@ -131,10 +136,10 @@ apply_ap_mode() {
     uci set dhcp.@dnsmasq[0].port='0'
 
     # --- Routing and firewall OFF --------------------------------------------
-    /etc/init.d/mwan3 stop 2>/dev/null
-    /etc/init.d/mwan3 disable 2>/dev/null
-    /etc/init.d/firewall stop 2>/dev/null
-    /etc/init.d/firewall disable 2>/dev/null
+    svc /etc/init.d/mwan3 stop 2>/dev/null
+    svc /etc/init.d/mwan3 disable 2>/dev/null
+    svc /etc/init.d/firewall stop 2>/dev/null
+    svc /etc/init.d/firewall disable 2>/dev/null
 
     # --- Wireless stays an AP, now bridged to the upstream LAN ---------------
     # This is the wireless half of AP mode: the radios keep broadcasting, but
@@ -148,7 +153,58 @@ apply_ap_mode() {
     done
 
     uci commit
-    echo ap > "$MODE_FILE"
+    [ -n "$MW_DRY" ] || echo ap > "$MODE_FILE"
+}
+
+# --- Apply Router 2 (DHCP on) -------------------------------------------------
+# A second router behind Router 1: ONE uplink (the former WAN1 port, an ordinary DHCP client on Router 1's
+# network), its own LAN with its own address range and DHCP server, NAT and firewall on, Wi-Fi unchanged.
+# No multi-WAN (mwan3 off). Built from the saved main-router configuration, so going back is the same
+# profile restore as before. With DHCP OFF the Router 2 role is the bridged mode above (apply_ap_mode).
+apply_router2_mode() {
+    local lan_ip="${1:-192.168.2.1}" lan_mask="${2:-255.255.255.0}" bridge_all="${3:-1}"
+    log "applying Router 2 mode (lan=$lan_ip/$lan_mask bridge_all=$bridge_all)"
+
+    # Ports of the two spare lines join the LAN (when asked): they are not uplinks here.
+    local p2 p3 p have
+    p2=$(uci -q get network.wan2.device); p3=$(uci -q get network.wan3.device)
+    if [ "$bridge_all" = "1" ]; then
+        have=" $(uci -q get network.br_lan.ports) "
+        for p in $p2 $p3; do
+            case "$have" in *" $p "*) continue ;; esac
+            [ -e "/sys/class/net/$p" ] && uci add_list network.br_lan.ports="$p"
+        done
+    fi
+    uci -q delete network.wan2
+    uci -q delete network.wan3
+
+    # the one uplink: a plain DHCP client on Router 1's network
+    uci set network.wan1.proto='dhcp'
+    uci -q delete network.wan1.ipaddr
+    uci -q delete network.wan1.netmask
+    uci -q delete network.wan1.gateway
+    uci -q delete network.wan1.dns
+    uci -q delete network.wan1.pppd_options
+
+    # its own network (must differ from Router 1's)
+    uci set network.lan.proto='static'
+    uci set network.lan.ipaddr="$lan_ip"
+    uci set network.lan.netmask="$lan_mask"
+    if uci -q get network.lan_admin >/dev/null; then
+        uci set network.lan_admin.ipaddr="${lan_ip%.*}.254"
+    fi
+
+    # DHCP server stays ON for the LAN (the default); make sure it is not switched off
+    uci -q delete dhcp.lan.ignore
+    uci -q delete dhcp.@dnsmasq[0].port
+
+    # one line: nothing for the multi-WAN tracker to do (and no false "line down" alerts for lines that do not exist)
+    svc /etc/init.d/mwan3 stop 2>/dev/null
+    svc /etc/init.d/mwan3 disable 2>/dev/null
+    svc /etc/init.d/firewall enable 2>/dev/null
+
+    uci commit
+    [ -n "$MW_DRY" ] || echo router2 > "$MODE_FILE"
 }
 
 # --- Apply Router mode --------------------------------------------------------
@@ -231,7 +287,7 @@ _rollback_timer() {
     # used for a plain LAN IP/netmask revert) restore config files without
     # representing a mode of their own, so MODE_FILE is left untouched.
     case "$restore_to" in
-        router|ap) echo "$restore_to" > "$MODE_FILE" ;;
+        router|ap|router2) echo "$restore_to" > "$MODE_FILE" ;;
     esac
     rm -f "$PENDING_FILE" "$TIMER_FILE"
     # Reboot rather than reload: the failed mode left services in an unknown
@@ -330,10 +386,65 @@ switch_to_router() {
       /etc/init.d/mwan3 restart; wifi reload ) >/dev/null 2>&1 &
 }
 
+# Router 2 role: dhcp=1 -> its own network (routed), dhcp=0 -> joins Router 1's network (bridged, the old
+# access point mode). Works from the main router and between the two Router 2 variants.
+switch_to_role2() {
+    local dhcp="${1:-1}" lan_ip="$2" lan_mask="$3" bridge_all="${4:-1}" proto="${5:-dhcp}" ip="$6" mask="$7" gw="$8"
+    local cur target
+    cur=$(current_mode)
+    [ "$dhcp" = "0" ] && target=ap || target=router2
+    [ "$cur" = "$target" ] && { json_error "Already in that mode."; return 1; }
+    if [ "$target" = "router2" ]; then
+        valid_ipv4 "${lan_ip:-192.168.2.1}" && valid_ipv4 "${lan_mask:-255.255.255.0}" || { json_error "Enter a valid address and netmask for Router 2's network."; return 1; }
+        # Router 2's network must not be the one it is plugged into: refuse the obvious clash
+        local up; up=$(ip route show default 2>/dev/null | sed -n 's/.* via \([0-9.]*\) .*/\1/p' | head -n1)
+        [ -n "$up" ] && [ "${up%.*}" = "${lan_ip%.*}" ] && { json_error "That is the same network as the one Router 2 is plugged into. Pick a different address, e.g. 192.168.3.1."; return 1; }
+    fi
+
+    if [ "$cur" = "router" ]; then
+        profile_save router                       # what rollback and "back to main router" restore
+    else
+        profile_exists router || { json_error "No saved main-router profile exists."; return 1; }
+        profile_save "$cur"                       # so a failed change returns to exactly what runs now
+        profile_restore router                    # build the new variant from the main configuration
+    fi
+
+    if [ "$target" = "ap" ]; then
+        apply_ap_mode "$bridge_all" "$proto" "$ip" "$mask" "$gw"
+    else
+        apply_router2_mode "${lan_ip:-192.168.2.1}" "${lan_mask:-255.255.255.0}" "$bridge_all"
+    fi
+
+    local secs="$ROLLBACK_SECONDS" msg
+    if arm_rollback "$cur"; then
+        msg="Router 2 applied. Reconnect and confirm within 90 seconds or the device returns to how it was."
+    else
+        secs=0
+        msg="Router 2 applied, but the automatic revert timer FAILED TO START: nothing will undo this if you cannot reconnect. Recover with failsafe mode, or restore the saved profile over SSH."
+    fi
+    json_ok "$(printf '%s,%s,%s' "$(jstr mode "$target")" "$(jnum rollback_seconds "$secs")" "$(jstr message "$msg")")"
+    ( sleep 2; /etc/init.d/network restart; /etc/init.d/firewall restart; wifi reload ) >/dev/null 2>&1 &
+}
+
+# What a Router 2 change would do, on a COPY of the settings: prints the resulting network and DHCP lines.
+# Nothing running is touched. Usage: modeswitch.sh preview <dhcp 0|1> [lan_ip] [lan_mask]
+preview_role2() {
+    local dhcp="${1:-1}" d=/tmp/mw-preview.$$
+    rm -rf "$d"; mkdir -p "$d"
+    for c in $CONFIGS; do [ -f "/etc/config/$c" ] && cp "/etc/config/$c" "$d/$c"; done
+    ( export MW_DRY=1 MW_UCI_DIR="$d"
+      if [ "$dhcp" = "0" ]; then apply_ap_mode 1 dhcp; else apply_router2_mode "${2:-192.168.2.1}" "${3:-255.255.255.0}" 1; fi ) >/dev/null 2>&1
+    echo "--- network"; uci -c "$d" show network | grep -E "^network\.(wan[123]|lan|lan_admin|br_lan)(\.|=)"
+    echo "--- dhcp";    uci -c "$d" show dhcp | grep -E "dhcp\.lan\.|dnsmasq\[0\]\.port|guest"
+    rm -rf "$d"
+}
+
 case "$1" in
     mode)            printf '{%s}' "$(jstr mode "$(current_mode)")" ;;
     to-ap)           switch_to_ap "$2" "$3" "$4" "$5" "$6" ;;
     to-router)       switch_to_router ;;
+    to-router2)      switch_to_role2 "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
+    preview)         preview_role2 "$2" "$3" "$4" ;;
     confirm)         confirm_switch ;;
     rollback-status) rollback_status ;;
     save-profile)    profile_save "$2" ;;

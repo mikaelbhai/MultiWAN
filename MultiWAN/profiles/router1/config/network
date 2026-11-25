@@ -1,0 +1,53 @@
+# Router 1 (main router) - cleaned copy of the live settings. See ../README.md before using it.
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	list ipaddr '127.0.0.1/8'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.67.1'
+	option netmask '255.255.255.0'
+	option multipath 'off'
+
+config device 'br_lan'
+	option name 'br-lan'
+	option type 'bridge'
+	option stp '0'
+	list ports 'lan2'
+	list ports 'lan3'
+	list ports 'lan4'
+
+config interface 'wan1'
+	option metric '10'
+	option device 'wan'
+	option proto 'static'
+	option peerdns '0'
+	option ipv6 '0'
+	option ipaddr '203.0.113.10'
+	option netmask '255.255.255.0'
+	option gateway '203.0.113.1'
+	list dns '9.9.9.9'
+	list dns '8.8.8.8'
+
+config interface 'wan2'
+	option device 'lan1'
+	option proto 'dhcp'
+	option metric '20'
+	option peerdns '0'
+	option ipv6 '0'
+
+config interface 'lan_admin'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.67.254'
+	option netmask '255.255.255.255'
+
+config interface 'lan_block'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.67.253'
+	option netmask '255.255.255.255'
+

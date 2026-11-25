@@ -2944,6 +2944,7 @@ api_dispatch() {
 
         /mode:GET)                printf '{"ok":true,"mode":%s}\n' "$(sh /usr/lib/mwadmin/modeswitch.sh mode)" ;;
         /mode/ap:POST)            sh /usr/lib/mwadmin/modeswitch.sh to-ap "$(bodyval bridge_all)" "$(bodyval proto)" "$(bodyval ipaddr)" "$(bodyval netmask)" "$(bodyval gateway)" ;;
+        /mode/router2:POST)       sh /usr/lib/mwadmin/modeswitch.sh to-router2 "$(bodyval dhcp)" "$(bodyval lan_ip)" "$(bodyval lan_mask)" "$(bodyval bridge_all)" "$(bodyval proto)" "$(bodyval ipaddr)" "$(bodyval netmask)" "$(bodyval gateway)" ;;
         /mode/router:POST)        sh /usr/lib/mwadmin/modeswitch.sh to-router ;;
         /mode/confirm:POST)       sh /usr/lib/mwadmin/modeswitch.sh confirm ;;
 
