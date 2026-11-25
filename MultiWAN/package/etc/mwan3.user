@@ -55,8 +55,22 @@ log_wan_history() {
     fi
 }
 
+# mwan3 remembers for 10 minutes which line each source address last used ("sticky"), and every
+# packet that follows that memory refreshes it. When that line dies, new connections from those
+# addresses keep being sent to the dead line (they end in "unreachable"), and their retries keep the
+# memory alive: those devices lose the internet for as long as the line is down, even though the
+# other line is fine and mwan3 reports it in use. (Found 2026-11-25: every device behind the router
+# was offline for the whole of a 40 s outage of the main line; it only came back when the line did.)
+# So the memory is dropped whenever a line goes down or comes back. New connections then follow the
+# failover policy at once, and fail back to the main line as soon as it is healthy.
+flush_sticky() {
+    local s
+    for s in $(ipset list -n 2>/dev/null | grep '^mwan3_rule_'); do ipset flush "$s" 2>/dev/null; done
+}
+
 case "$ACTION" in
     disconnected)
+        flush_sticky
         log_wan_history down
 
         if alert_this_wan; then
@@ -79,6 +93,7 @@ case "$ACTION" in
         fi
         ;;
     connected)
+        flush_sticky
         log_wan_history up
 
         # Failback confirmation for WAN1 specifically — the one link where

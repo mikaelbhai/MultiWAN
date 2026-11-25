@@ -109,13 +109,26 @@ function line_event(PDO $pdo, array $r, array $names, string $iface, bool $down,
             ->execute([$rid, $iface, $ts, $ts, $why]);
         return;
     }
-    // back: only say so if the owner was told it was down
-    if ($row && $row['state'] === 'down' && (int) $row['alerted']) {
+    // back
+    if ($row && $row['state'] === 'down') {
         $gone = max(0, $ts - (int) $row['since']);
         $main = is_main_line($iface);
-        add_alert($pdo, $rid, null, $main ? 'line_up' : 'backup_up',
-            $main ? "$ln is back" : "Backup line $ln is back",
-            "$name: " . ($main ? "your main line $ln" : "your backup line $ln") . " is working again after " . dur($gone) . ".", $ts);
+        $who = $main ? "your main line $ln" : "your backup line $ln";
+        if ((int) $row['alerted']) {
+            // the owner was told it was down: now tell them it is back
+            add_alert($pdo, $rid, null, $main ? 'line_up' : 'backup_up',
+                $main ? "$ln is back" : "Backup line $ln is back",
+                "$name: $who is working again after " . dur($gone) . ".", $ts);
+        } elseif ($gone >= ($main ? LINE_MAIN_AFTER : LINE_BACKUP_AFTER)) {
+            // It went down and came back before we were told (an upload can arrive late): ONE message
+            // that says both, instead of a "down" and an "up" arriving at the same moment.
+            $why = trim((string) $row['reason']);
+            add_alert($pdo, $rid, null, $main ? 'line_up' : 'backup_up',
+                $main ? "$ln was down for " . dur($gone) . ", now back" : "Backup line $ln was down for " . dur($gone) . ", now back",
+                "$name: $who went down at " . hm((int) $row['since']) . " and is working again after " . dur($gone) . "." .
+                ($why !== '' ? " The router's opinion: $why." : ''), $ts);
+        }
+        // down for less than the alert time: a blip, no alert at all
     }
     $pdo->prepare('INSERT INTO line_watch (router_id, item, state, since, ts_state, alerted, reason) VALUES (?, ?, \'up\', NULL, ?, 0, NULL)
         ON CONFLICT (router_id, item) DO UPDATE SET state = \'up\', since = NULL, ts_state = excluded.ts_state, alerted = 0, reason = NULL')

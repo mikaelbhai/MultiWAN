@@ -74,6 +74,28 @@ Also: `www.speedtest.net` is pinned in the router's DNS (`dhcp.@dnsmasq[0].addre
 "never blocked" resolver (lib/allow.sh) copies the `address` entries, because it asks the upstream servers
 directly and would otherwise ignore them. If the filter ever extends to `.147.22`, change the swap's target.
 
+## Failover blackhole from mwan3's "sticky" memory (found and fixed 2026-11-26)
+
+**Symptom.** Switch the main line off: mwan3 reports it offline within a second, says the backup line is in use,
+the router's own traffic (uploads, tunnel) carries on, but every device behind the router has no internet for as
+long as the main line stays down (measured: 40 s, until the line came back).
+
+**Cause.** `rule_default` / `rule_https` / `rule_udp_split` have `sticky=1` (timeout 600). The chain sets the mark of
+the line the source address used last, keeps it if the (source, mark) pair is in the ipset
+`mwan3_rule_ipv4_rule_*`, and only otherwise asks the failover policy; then it refreshes the entry. When the line
+dies, those devices keep being marked for it, their packets end in `ip rule 3001 ... unreachable`, and their
+retries refresh the entry, so it never expires. Only rebuilding the rules (the line coming back) cleared it.
+
+**Fix.** `flush_sticky` in `/etc/mwan3.user` (mwan3's own hook, run when a line is marked offline or online) and a
+second copy in `ev_line_change` (events.sh) empty every `mwan3_rule_*` ipset. New connections then follow the
+failover policy at once, and fail back as soon as the main line is healthy.
+
+**Measured with a logger on a PC behind the router** (ping + four sites every ~3 s while the main line's port was
+taken down for ~28 s): before, all four sites failed for 40 s; after, one request failed at the moment of the
+switch, the PC went from 2 ms (Connect) to 121 ms (Transworld) within about a second, and it came back to Connect
+a few seconds after the port returned. **Lesson: test failover from a device behind the router, never from the
+router itself** (its own connections do not use the sticky memory).
+
 ## Lessons for testing lines
 
 - Restore a port you took down with `ifup wanN`, as the panel does. A bare `ip link set <port> up` leaves

@@ -160,6 +160,8 @@ ev_boot_check() {
 ev_line_change() {
     local i="$1" what="$2" f t0 prev
     mkdir -p "$EV_LS"
+    # also drop mwan3's sticky memory here (the same as /etc/mwan3.user does): a second chance if that hook is late
+    for s in $(ipset list -n 2>/dev/null | grep '^mwan3_rule_'); do ipset flush "$s" 2>/dev/null; done
     f="$EV_LS/$i"; t0=$(date +%s); prev=$(cat "$f" 2>/dev/null)
     case "$what" in
         offline)
@@ -167,14 +169,17 @@ ev_line_change() {
             echo down > "$f"; echo "$t0" > "$f.t"; : > "$f.pending"
             ( why=$(sh /usr/lib/mwadmin/linewhy.sh "$i" 2>/dev/null)
               ev_add_at "$t0" line error "Internet line $i went down${why:+ - reason: $why}"
-              rm -f "$f.pending" ) >/dev/null 2>&1 &
+              rm -f "$f.pending"
+              # tell the website now, not at the next once-a-minute upload (a late "down" arrives together with the "up")
+              sh /usr/lib/mwadmin/events.sh push >/dev/null 2>&1 ) >/dev/null 2>&1 &
             ;;
         online)
             if [ "$prev" != "down" ]; then echo up > "$f"; return 0; fi
             echo up > "$f"
             ( n=0; while [ -e "$f.pending" ] && [ "$n" -lt 20 ]; do sleep 1; n=$((n + 1)); done
               d=$(( $(date +%s) - $(cat "$f.t" 2>/dev/null || echo "$t0") ))
-              ev_add line info "Internet line $i is back (it was down for about $d s)" ) >/dev/null 2>&1 &
+              ev_add line info "Internet line $i is back (it was down for about $d s)"
+              sh /usr/lib/mwadmin/events.sh push >/dev/null 2>&1 ) >/dev/null 2>&1 &
             ;;
     esac
 }
