@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/mwdrive - USB drives shared on the network (see
+# /usr/lib/mwadmin/drive.sh): mounts them, writes the firewall gate and the
+# share list, and starts file sharing only while some drive is switched on
+# for some device.
+
+START=99
+STOP=10
+
+start() {
+    [ -x /usr/sbin/ksmbd.mountd ] || return 0
+    sh /usr/lib/mwadmin/drive.sh boot >/dev/null 2>&1 &
+}
+
+stop() {
+    /etc/init.d/ksmbd stop >/dev/null 2>&1
+}

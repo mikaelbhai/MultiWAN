@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Baytaar Router</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a84ff'/><path d='M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z' fill='white'/></svg>">
+</head>
+<body>
+
+<div id="login" class="login-shell">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-brand">
+      <svg viewBox="0 0 32 32" class="brand-mark"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <div><h1>Baytaar Router</h1><p>Sign in to manage this router</p></div>
+    </div>
+    <label class="field"><span>Password</span>
+      <input type="password" id="login-pass" autocomplete="current-password" required autofocus></label>
+    <p class="hint">The router's <code>root</code> password.</p>
+    <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+    <div class="alert alert-error" id="login-error" hidden></div>
+  </form>
+  <p class="login-foot">Reachable from your local network only</p>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="btn btn-ghost btn-sm nav-toggle" id="nav-toggle" aria-label="Menu">&#9776;</button>
+      <svg viewBox="0 0 32 32" class="brand-mark sm"><rect width="32" height="32" rx="7"/><path d="M8 20h4v4H8zm6-6h4v10h-4zm6-6h4v16h-4z" fill="#fff"/></svg>
+      <span class="topbar-title">Baytaar</span>
+      <span class="mode-badge" id="mode-badge">&mdash;</span>
+    </div>
+    <div class="topbar-right">
+      <span class="active-wan" id="active-wan-chip"><span class="dot"></span><span id="active-wan-label">&mdash;</span></span>
+      <button class="btn btn-ghost btn-sm" id="theme-toggle" title="Light / dark">&#9680;</button>
+      <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <div class="rollback-bar" id="rollback-bar" hidden>
+    <strong>Confirm this change.</strong>
+    <span>Reverting to <b id="rb-target"></b> in <b id="rb-seconds"></b>s unless you confirm you still have access.</span>
+    <button class="btn btn-warn btn-sm" id="rb-confirm">Keep this configuration</button>
+  </div>
+
+  <div class="layout">
+    <nav class="sidebar" id="sidebar">
+      <input class="nav-search" id="nav-search" type="search" placeholder="Find a setting…" aria-label="Find a setting">
+      <div class="nav-group"><span class="nav-label">Overview</span>
+        <a href="#/dashboard" data-nav data-k="home status overview speed sign-in blocked sites">Dashboard</a>
+        <a href="#/devices" data-nav data-k="clients phones computers limit cap speed bandwidth usage">Devices</a>
+      </div>
+      <div class="nav-group"><span class="nav-label">Internet</span>
+        <a href="#/wan" data-nav data-k="wan isp failover static pppoe dhcp priority balance load mwan">Connections</a>
+        <a href="#/ports" data-nav data-k="ethernet sockets switch speed test link roles">Ports</a>
+        <a href="#/qos" data-nav data-k="sqm bufferbloat shaping priority traffic">Speed control (QoS)</a>
+        <a href="#/ddns" data-nav data-k="dynamic dns hostname noip duckdns">Dynamic DNS</a>
+      </div>
+      <div class="nav-group"><span class="nav-label">Home network</span>
+        <a href="#/wifi" data-nav data-k="wireless ssid password guest 2.4 5ghz channel">Wi-Fi</a>
+        <a href="#/lan" data-nav data-k="lan ip address dhcp leases reservations static">LAN &amp; DHCP</a>
+        <a href="#/dns" data-nav data-k="dns adblock ads filter adult games blocklist">DNS &amp; filtering</a>
+        <a href="#/nodes" data-nav data-k="mesh access points repeaters nodes">Access points</a>
+        <a href="#/drives" data-nav data-k="usb drive drives storage disk hard disk share sharing files nas data photos">Drives &amp; storage</a>
+      </div>
+      <div class="nav-group"><span class="nav-label">Security</span>
+        <a href="#/firewall" data-nav data-k="firewall port forward forwarding nat open ports upnp">Firewall &amp; forwards</a>
+        <a href="#/vpn" data-nav data-k="wireguard vpn tunnel">VPN</a>
+        <a href="#/remote" data-nav data-k="remote access internet relay tunnel">Remote access</a>
+        <a href="#/access" data-nav data-k="ssh keys authorized dropbear password login">SSH &amp; keys</a>
+      </div>
+      <div class="nav-group"><span class="nav-label">System</span>
+        <a href="#/system" data-nav data-k="hostname timezone time password update name">Settings</a>
+        <a href="#/status" data-nav data-k="interfaces routes processes memory cpu log syslog kernel dmesg arp">Status &amp; logs</a>
+        <a href="#/diagnostics" data-nav data-k="ping traceroute test">Diagnostics</a>
+        <a href="#/services" data-nav data-k="startup services init cron schedule tasks rc.local boot">Services &amp; schedule</a>
+        <a href="#/packages" data-nav data-k="software install apk opkg packages">Packages</a>
+        <a href="#/alerts" data-nav data-k="email notifications telegram alerts">Alerts</a>
+        <a href="#/mode" data-nav data-k="access point bridge router mode">Operating mode</a>
+        <a href="#/maintenance" data-nav data-k="backup restore reset factory reboot firmware flash sysupgrade">Backup &amp; firmware</a>
+        <a href="#/config" data-nav data-k="uci raw config files expert advanced edit">Config files</a>
+      </div>
+    </nav>
+    <main class="content" id="view"></main>
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-danger" id="modal-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+#!/bin/sh
+# /www/mwguest/cgi-bin/guest — the "sign in to network" page.
+#
+# Served by its own uhttpd instance on port 8188. The firewall redirects the
+# first plain-HTTP request of an unregistered device here (see guest.sh), and
+# uhttpd sends every unknown path to this script, so a phone's connectivity
+# probe gets a redirect and the phone pops up its sign-in sheet.
+
+. /usr/lib/mwadmin/guest.sh
+. /usr/lib/mwadmin/block.sh
+
+LAN_IP=$(uget_d network.lan.ipaddr 192.168.1.1)
+LAN_IP="${LAN_IP%%/*}"
+SELF="http://$LAN_IP:$G_PORT/cgi-bin/guest"
+NET=$(uci show wireless 2>/dev/null | sed -n "s/.*\.ssid='\(.*\)'$/\1/p" | head -n1)
+[ -n "$NET" ] || NET="this network"
+NET=$(guest_clean "$NET" 32)
+
+MAC=$(guest_mac_of "$REMOTE_ADDR")
+
+redirect() {
+    printf 'Status: 302 Found\r\nLocation: %s\r\nCache-Control: no-store\r\nContent-Type: text/html\r\n\r\n' "$1"
+    printf '<html><body><a href="%s">Sign in to network</a></body></html>\n' "$1"
+    exit 0
+}
+
+page_top() {
+    printf 'Status: 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
+    cat <<EOF
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in to $NET</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px 16px;
+ font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#16233b;
+ background:linear-gradient(160deg,#e4ecf9 0%,#edf1f7 45%,#e6f3f1 100%)}
+.card{width:100%;max-width:400px;background:#fbfcfe;border:1px solid #d9e1ee;border-radius:22px;padding:28px 24px 24px;
+ box-shadow:0 24px 50px -28px rgba(22,35,59,.45);animation:up .45s ease both}
+@keyframes up{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.badge{width:54px;height:54px;border-radius:16px;background:linear-gradient(135deg,#2563eb,#0ea5a4);display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+.badge svg{width:28px;height:28px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
+p{margin:0 0 18px;color:#52627c;font-size:14.5px;line-height:1.5}
+label{display:block;font-size:13px;font-weight:600;margin:0 0 6px;color:#2b3a55}
+input{width:100%;font:inherit;font-size:16px;padding:13px 14px;border:1px solid #cdd7e6;border-radius:12px;background:#fff;color:inherit;margin-bottom:14px;outline:none}
+input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.18)}
+button,.btn{display:block;width:100%;text-align:center;text-decoration:none;font:inherit;font-weight:700;font-size:16px;color:#fff;border:0;border-radius:12px;padding:14px;cursor:pointer;
+ background:linear-gradient(135deg,#2563eb,#0ea5a4)}
+.err{background:#fdecec;border:1px solid #f3c0c0;color:#9b1c1c;border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:14px}
+.small{font-size:12.5px;color:#7a879c;margin:14px 0 0;text-align:center}
+</style></head><body><div class="card">
+EOF
+}
+
+page_end() { printf '</div></body></html>\n'; exit 0; }
+
+page_form() {
+    page_top
+    cat <<EOF
+<div class="badge"><svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M2 9a14.5 14.5 0 0 1 20 0"/><circle cx="12" cy="19.5" r="0.6"/></svg></div>
+<h1>Welcome to $NET</h1>
+<p>Enter your name and mobile number to use the internet. You only do this once on this device.</p>
+EOF
+    [ -n "$1" ] && printf '<div class="err">%s</div>\n' "$1"
+    cat <<EOF
+<form method="post" action="/cgi-bin/guest" autocomplete="on">
+<label for="n">Your full name (first and last)</label>
+<input id="n" name="name" type="text" maxlength="40" required autocomplete="name" placeholder="Ali Khan" pattern="\s*[A-Za-z.\-]+(\s+[A-Za-z.\-]+)+\s*" title="First and last name, in English letters" value="$F_NAME">
+<label for="p">Pakistani mobile number</label>
+<input id="p" name="phone" type="tel" inputmode="tel" maxlength="16" required autocomplete="tel" placeholder="0300 1234567" pattern="[\s\-+0-9]{10,16}" title="11 digits, for example 0300 1234567" value="$F_PHONE">
+<button type="submit">Connect</button>
+</form>
+<p class="small">This device will be remembered under your name.</p>
+EOF
+    page_end
+}
+
+page_done() {
+    page_top
+    cat <<EOF
+<div class="badge"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+<h1>You are connected</h1>
+<p>$1</p>
+<a class="btn" href="http://neverssl.com/">Continue</a>
+EOF
+    page_end
+}
+
+# urldecode one field of an application/x-www-form-urlencoded string ($2)
+field() {
+    local raw
+    raw=$(printf '%s' "$2" | tr '&' '\n' | sed -n "s/^$1=\(.*\)$/\1/p" | head -n1)
+    printf '%b' "$(printf '%s' "$raw" | sed -e 's/+/ /g' -e 's/\\/ /g' -e 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+}
+
+WHO=$(awk -F'\t' -v m="$MAC" '$1 == m { n = $4 } END { printf "%s", n }' "$G_FILE" 2>/dev/null)
+
+# One blocked site: what this device may do about it.
+site_box() {
+    local d="$1" st
+    st=$(block_status "$MAC" "$d")
+    printf '<div class="site"><b>%s</b>' "$(block_unit_label "$d")"
+    case "$st" in
+        approved) printf '<span class="ok">Approved for this device. If it still does not open, wait a minute and try again.</span>' ;;
+        pending)  printf '<span class="wait">Request sent. Waiting for the admin to approve.</span>' ;;
+        *)
+            [ "$st" = "denied" ] && printf '<span class="no">The admin declined the last request.</span>'
+            printf '<form method="post" action="/cgi-bin/guest"><input type="hidden" name="site" value="%s"><button type="submit">Request access</button></form>' "$d" ;;
+    esac
+    printf '</div>\n'
+}
+
+# This device's free time: unpause / pause the blocked sites (pause.sh).
+free_box() {
+    grep -q "^$MAC" /etc/mwadmin/exempt_devices 2>/dev/null && return 0
+    pause_account >/dev/null
+    local o used run allow left lm g
+    o=$(pause_owner "$MAC")
+    set -- $(pause_state "$o"); used=$1; run=$2
+    allow=$(pause_allow_s); left=$((allow > used ? allow - used : 0)); lm=$(((left + 59) / 60))
+    printf '<div class="site free">'
+    if pause_in_break; then
+        printf '<b>Break time until %s</b><span class="ok">Blocked sites are open for everyone right now. Your free time is not being used.</span>' "$(uget mwadmin.pause.break_to)"
+        [ "$run" = "1" ] && printf '<span>Your free time is switched on and starts counting again after the break.</span><form method="post" action="/cgi-bin/guest"><input type="hidden" name="free" value="off"><button type="submit" class="alt">Pause my free time</button></form>'
+    elif [ "$run" = "1" ]; then
+        printf '<b>Blocked sites are open: %s min left</b><span>Your free time is running. Pause it to save the rest for later.</span>' "$lm"
+        printf '<form method="post" action="/cgi-bin/guest"><input type="hidden" name="free" value="off"><button type="submit" class="alt">Pause</button></form>'
+    elif [ "$left" -gt 0 ]; then
+        printf '<b>Free time: %s min left today</b><span>Unpause to open the blocked sites. Time only counts while they are open, and not during break time.</span>' "$lm"
+        printf '<form method="post" action="/cgi-bin/guest"><input type="hidden" name="free" value="on"><button type="submit">Unpause blocked sites</button></form>'
+    else
+        printf '<b>No free time left today</b><span>It starts again at midnight.</span>'
+    fi
+    case "$o" in g[0-9]*) printf '<span class="small" style="text-align:left;margin:8px 0 0">Shared with your group: %s</span>' "$(pause_label "$o")" ;; esac
+    printf '</div>\n'
+}
+
+page_sites() {       # $1 = site to show first (may be empty)
+    page_top
+    cat <<EOF
+<style>
+.site{border:1px solid #d9e1ee;border-radius:14px;padding:14px;margin:0 0 12px;background:#fff}
+.site b{display:block;font-size:16px;margin-bottom:8px;word-break:break-all}
+.site span{display:block;font-size:13.5px;line-height:1.45;margin-bottom:8px}
+.site span:last-child{margin-bottom:0}
+.site .ok{color:#0f766e}.site .wait{color:#92600a}.site .no{color:#9b1c1c}
+.site form{margin:0}.site button{padding:11px;font-size:15px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#7a879c;margin:18px 0 10px}
+.site.free{border-color:#bcd3f5;background:#f3f8ff}
+.site button.alt{background:#fff;color:#2563eb;border:1px solid #2563eb}
+</style>
+<div class="badge"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
+EOF
+    FREE_BOX=$(free_box)
+    if [ -n "$1" ]; then
+        printf '<h1>This site is blocked</h1>\n<p>The owner of this network has blocked it. Use your free time, or ask for access. If the admin approves, it opens on this device only.</p>\n'
+        printf '%s\n' "$FREE_BOX"
+        site_box "$1"
+    else
+        printf '<h1>Blocked sites and apps</h1>\n<p>These are blocked on this network. Use your free time, or ask the admin for access on this device. Open <b>sites.router</b> any time to come back here.</p>\n'
+        printf '%s\n' "$FREE_BOX"
+    fi
+    local d first=1
+    while read -r d; do
+        [ -n "$d" ] && [ "$d" != "$1" ] || continue
+        [ -n "$1" ] && [ "$first" = 1 ] && printf '<h2>Also blocked</h2>\n'
+        first=0
+        site_box "$d"
+    done < "$B_SITES"
+    [ -n "$WHO" ] && printf '<p class="small">Requests from this device are sent as %s.</p>\n' "$WHO"
+    page_end
+}
+
+[ -n "$MAC" ] || { page_top; printf '<h1>Not available</h1><p>This page only works for devices connected to this network.</p>\n'; page_end; }
+
+HOST="${HTTP_HOST%%:*}"
+BODY=""
+if [ "$REQUEST_METHOD" = "POST" ]; then
+    LEN="${CONTENT_LENGTH:-0}"
+    case "$LEN" in ''|*[!0-9]*) LEN=0 ;; esac
+    [ "$LEN" -gt 2048 ] && LEN=2048
+    BODY=$(head -c "$LEN")
+fi
+
+# ---- 1. network sign-in comes first: an unknown device registers before anything else
+if guest_active && ! guest_known "$MAC"; then
+    if [ "$REQUEST_METHOD" = "POST" ]; then
+        F_NAME=$(guest_clean "$(field name "$BODY")" 40)
+        F_PHONE=$(guest_clean_phone "$(field phone "$BODY")")
+        CHK=$(guest_check_name "$F_NAME")
+        case "$CHK" in ok\ *) F_NAME="${CHK#ok }" ;; *) page_form "${CHK#err }" ;; esac
+        CHK=$(guest_check_phone "$F_PHONE")
+        case "$CHK" in ok\ *) F_PHONE="${CHK#ok }" ;; *) page_form "${CHK#err }" ;; esac
+        [ "$(wc -l < "$G_FILE")" -lt "$G_MAX" ] || page_form "This network cannot register more devices. Please ask the owner."
+        guest_add "$MAC" "$F_PHONE" "$F_NAME"
+        page_done "Thank you, $F_NAME. This device is now registered and will not be asked again."
+    fi
+    # Any other host name means this is an intercepted request (for example
+    # the phone's connectivity check): send it to the form.
+    [ "$HOST" = "$LAN_IP" ] || redirect "$SELF"
+    page_form ""
+fi
+
+# ---- 2. free time: the device pauses / unpauses the blocked sites for itself
+if [ "$REQUEST_METHOD" = "POST" ] && [ -n "$(field free "$BODY")" ]; then
+    if ! grep -q "^$MAC" /etc/mwadmin/exempt_devices 2>/dev/null; then
+        case "$(field free "$BODY")" in
+            on)  pause_toggle "$(pause_owner "$MAC")" 1 >/dev/null ;;
+            off) pause_toggle "$(pause_owner "$MAC")" 0 >/dev/null ;;
+        esac
+    fi
+    redirect "$SELF"
+fi
+
+# ---- 3. blocked sites
+if [ "$REQUEST_METHOD" = "POST" ]; then
+    SITE=$(block_clean_unit "$(field site "$BODY")")
+    if [ -n "$SITE" ] && grep -qxF "$SITE" "$B_SITES" 2>/dev/null; then
+        case "$(block_status "$MAC" "$SITE")" in
+            approved|pending) ;;
+            *) [ "$(wc -l < "$B_REQ")" -lt "$B_MAX_REQ" ] && { block_set_status "$MAC" "$SITE" pending; log "site request: $MAC ($WHO) wants $SITE"; } ;;
+        esac
+    fi
+    redirect "$SELF?site=$SITE"
+fi
+
+# A request for a blocked name lands here through the block address: move to
+# the router's own address so the page and its button work normally.
+if [ "$HOST" != "$LAN_IP" ]; then
+    SITE=$(block_match "$HOST")
+    [ -n "$SITE" ] && redirect "$SELF?site=$SITE"
+    redirect "$SELF"
+fi
+
+if block_any; then
+    SITE=$(block_clean_unit "$(field site "$QUERY_STRING")")
+    [ -n "$SITE" ] && grep -qxF "$SITE" "$B_SITES" || SITE=""
+    page_sites "$SITE"
+fi
+
+if guest_active; then
+    page_done "This device is already registered. You can use the internet."
+fi
+page_done "This network does not need a sign-in. You can use the internet."

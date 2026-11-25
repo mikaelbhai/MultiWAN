@@ -1,0 +1,15 @@
+#!/bin/sh
+# /etc/hotplug.d/block/30-mwdrive
+# A USB drive was plugged in or pulled out: mount it and update the shares
+# (see /usr/lib/mwadmin/drive.sh). Waits a moment so every partition of the
+# drive has shown up, and runs in the background so hotplug is not held up.
+case "$ACTION" in
+    add|remove) ;;
+    *) exit 0 ;;
+esac
+case "$DEVNAME" in
+    sd*) ;;
+    *) exit 0 ;;
+esac
+[ -x /usr/sbin/ksmbd.mountd ] || exit 0
+( sleep 3; sh /usr/lib/mwadmin/drive.sh apply ) >/dev/null 2>&1 &

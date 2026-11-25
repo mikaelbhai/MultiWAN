@@ -1,0 +1,71 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/mwremote — outbound relay tunnel for internet admin access.
+#
+# Opens a single outbound SSH connection to a relay host you control (a VPS,
+# shared hosting account, anything that accepts SSH and permits
+# AllowTcpForwarding) and asks it to forward one loopback port on that host
+# back to the admin UI's port on this router:
+#
+#   relay_host:127.0.0.1:<remote_port>  --(ssh -R, over the tunnel)-->  127.0.0.1:<local_port> (this router)
+#
+# This router never accepts an inbound connection from the internet — the
+# connection is entirely outbound, same as any other client on the LAN
+# reaching out to a web server. The relay host's own web server (configured
+# separately, outside this router's control) is what actually terminates
+# public HTTPS and proxies to the forwarded loopback port. See the admin
+# UI's Remote Access page and docs/ for the relay-host-side setup.
+#
+# procd supervises and respawns the ssh process, so a dropped connection
+# (relay host reboot, WAN failover, network hiccup) reconnects on its own.
+
+START=96
+STOP=10
+
+USE_PROCD=1
+
+KEYFILE="/etc/mwadmin/remote_id_dropbear"
+
+start_service() {
+    [ "$(uci -q get mwadmin.remote.enabled)" = "1" ] || return 0
+    command -v dbclient >/dev/null 2>&1 || {
+        logger -t mwremote "no ssh client available on this device"
+        return 1
+    }
+    [ -f "$KEYFILE" ] || {
+        logger -t mwremote "no key at $KEYFILE; generate one from the admin UI's Remote Access page first"
+        return 1
+    }
+
+    local host user ssh_port local_port remote_port
+    host=$(uci -q get mwadmin.remote.host)
+    user=$(uci -q get mwadmin.remote.user)
+    ssh_port=$(uci -q get mwadmin.remote.ssh_port); [ -z "$ssh_port" ] && ssh_port=22
+    remote_port=$(uci -q get mwadmin.remote.remote_port)
+    local_port=$(uci -q get mwadmin.@main[0].port); [ -z "$local_port" ] && local_port=8080
+
+    [ -z "$host" ] || [ -z "$user" ] || [ -z "$remote_port" ] && {
+        logger -t mwremote "relay host, user, or remote port not configured; nothing to start"
+        return 1
+    }
+
+    # tunnel.sh re-reads the LAN address on every reconnect and switches to
+    # the second port pair when the server still holds the first one
+    procd_open_instance
+    procd_set_param command /bin/sh /usr/lib/mwadmin/tunnel.sh
+    procd_set_param respawn 3600 10 0
+    procd_close_instance
+    logger -t mwremote "relay tunnel service starting: ${user}@${host}:${ssh_port}, ports ${remote_port}/$((remote_port + 2))"
+}
+
+stop_service() {
+    for p in $(ps w | grep -E '([s]sh|[d]bclient) -N -R 127.0.0.1:' | awk '{print $1}'); do kill "$p" 2>/dev/null; done
+}
+
+service_triggers() {
+    procd_add_reload_trigger "mwadmin"
+}
+
+reload_service() {
+    stop
+    start
+}

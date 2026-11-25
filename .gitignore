@@ -1,27 +1,44 @@
-# Real site configuration — contains your actual WiFi password, static IP,
-# and other live secrets. config/mwan.env.example is the template that ships
-# instead; copy it to mwan.env locally and fill in your own values.
-config/mwan.env
+# Real site configuration: real Wi-Fi password, static IP and other live secrets.
+# MultiWAN/config/mwan.env.example is the template; copy it to mwan.env and fill it in.
+MultiWAN/config/mwan.env
 
-# Full router config backups — contain the root password hash, dropbear
-# private host keys, WiFi PSK, and every camera reservation in plaintext.
+# Router backups and migrations: root password hash, SSH host keys, Wi-Fi keys in plaintext.
 backups/
 backup.json
-
-# Hardware-specific MTD partition dumps (radio calibration, MAC-derived
-# config) from this one physical unit. Not portable to any other router,
-# not useful to anyone else, and not something to publish.
+migration-*/
+beta-from-*/
 stock-backup/
 DO-NOT-FLASH/
 
-# Vendor firmware images, GPL source drops, and vendor PDFs — large,
-# redistributable-but-not-ours-to-publish, and not part of this project.
+# Firmware images, vendor drops, built bundles, archives.
 *.bin
+*.img
 *.zip
 *.tar.gz
 *.pdf
-Archer C6*/
-GPL_*/
+fw/
+openwrt-*/
+linksys-stock/
+
+# Android: signing key, Firebase files, build output, built apps.
+android-app/release.keystore
+android-app/release.keystore.password.txt
+android-app/firebase-key.json
+android-app/google-services.json
+android-app/local.properties
+android-app/build/
+android-app/.gradle/
+*.apk
+*.idsig
+
+# Website secrets and state (the portal's database and keys live on the host, outside the repo).
+portal/*.sqlite*
+portal/firebase-key.json
+portal/firebase-access.json
+portal/alertd.beat
+portal/*.log
+portal/*.lock
 
 # Local scratch
 *.log
+__pycache__/

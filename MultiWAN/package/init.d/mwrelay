@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/mwrelay - HTTPS fallback channel to the website (see relay.sh),
+# for lines that block the SSH tunnel.
+
+START=97
+STOP=10
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh /usr/lib/mwadmin/relay.sh
+    procd_set_param respawn 3600 10 0
+    procd_close_instance
+}

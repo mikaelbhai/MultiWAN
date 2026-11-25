@@ -1,0 +1,260 @@
+#!/bin/sh
+# /www/mwadmin/cgi-bin/mwadmin — API entry point and authentication gate.
+#
+# Dispatcher only. Endpoint implementations live in /usr/lib/mwadmin/api.sh.
+#
+# AUTHENTICATION MODEL
+# --------------------
+# Sessions are delegated entirely to OpenWrt's own rpcd. Logging in calls
+# `ubus call session login`, which validates against the router's root password
+# in /etc/shadow and returns a session token. Every later request is checked
+# with `ubus call session get`.
+#
+# This is deliberate: it means there is no second password to manage, no
+# homegrown password hashing, no credential file to leak, and session expiry is
+# handled by code that is already audited. Your router root password IS the
+# admin password.
+
+. /usr/share/libubox/jshn.sh
+. /usr/lib/mwadmin/common.sh
+
+SESSION_TIMEOUT=3600
+
+# ---------------------------------------------------------------------------
+# Response helpers
+# ---------------------------------------------------------------------------
+send_headers() {
+    local status="${1:-200 OK}" extra="$2"
+    printf 'Status: %s\r\n' "$status"
+    printf 'Content-Type: application/json\r\n'
+    printf 'Cache-Control: no-store, no-cache, must-revalidate\r\n'
+    printf 'X-Content-Type-Options: nosniff\r\n'
+    printf 'X-Frame-Options: DENY\r\n'
+    # The SPA is entirely self-contained; nothing loads from off-box. A strict
+    # CSP means a reflected value that escaped json_escape still cannot execute.
+    printf "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'\r\n"
+    # CORS: lets an entirely separate app on another origin (a different
+    # website, or non-browser software) call this API directly. Safe as a
+    # wildcard specifically because auth here never rides on an ambient
+    # cookie for cross-origin callers — see get_session_token below. A
+    # cross-origin caller must already know a real session token (obtained
+    # only via a real /login with the router password) to do anything; the
+    # wildcard just lets a browser read that caller's own authenticated
+    # response, not grant it credentials it doesn't already have.
+    printf 'Access-Control-Allow-Origin: *\r\n'
+    printf 'Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n'
+    printf 'Access-Control-Allow-Headers: Content-Type\r\n'
+    [ -n "$extra" ] && printf '%s\r\n' "$extra"
+    printf '\r\n'
+}
+
+fail() { send_headers "${2:-400 Bad Request}"; json_error "$1"; exit 0; }
+
+# ---------------------------------------------------------------------------
+# Request parsing
+# ---------------------------------------------------------------------------
+METHOD="${REQUEST_METHOD:-GET}"
+ROUTE="${PATH_INFO:-/}"
+
+# CORS preflight. A browser sends this ahead of any cross-origin POST (this
+# API is JSON, which counts as a "non-simple" request) to ask permission
+# before sending the real one. Nothing to authenticate or route — just
+# confirm the headers above and stop.
+if [ "$METHOD" = "OPTIONS" ]; then
+    send_headers "204 No Content"
+    exit 0
+fi
+
+# Refuse oversized bodies before reading them into a shell variable.
+BODY=""
+if [ "$METHOD" = "POST" ] && [ -n "$CONTENT_LENGTH" ]; then
+    if ! valid_int "$CONTENT_LENGTH" || [ "$CONTENT_LENGTH" -gt 262144 ]; then
+        fail "Request body too large or malformed." "413 Payload Too Large"
+    fi
+    BODY=$(dd bs="$CONTENT_LENGTH" count=1 2>/dev/null)
+fi
+
+# Pull one field out of the JSON body. Returns empty if absent.
+# _v must be cleared first: json_get_var leaves it untouched when the key is
+# missing, so without this a later lookup would silently inherit an earlier
+# field's value — e.g. a missing 'netmask' picking up the 'ipaddr' just read.
+bodyval() {
+    _v=""
+    [ -z "$BODY" ] && return 0
+    json_init
+    json_load "$BODY" 2>/dev/null || return 0
+    json_get_var _v "$1" 2>/dev/null
+    printf '%s' "$_v"
+}
+
+# Pull one field out of the query string, URL-decoded.
+qsval() {
+    local key="$1" raw
+    raw=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | \
+          sed -n "s/^$key=\(.*\)$/\1/p" | head -n1)
+    [ -z "$raw" ] && return 0
+    # %XX decode. printf's \x handling does the actual byte conversion.
+    printf '%b' "$(printf '%s' "$raw" | sed -e 's/+/ /g' -e 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+}
+
+# ---------------------------------------------------------------------------
+# Session handling
+# ---------------------------------------------------------------------------
+get_session_token() {
+    local sid
+    sid=$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | \
+        sed -n 's/^[[:space:]]*mwsession=\([a-f0-9]\{32\}\)$/\1/p' | head -n1)
+    if [ -n "$sid" ]; then printf '%s' "$sid"; return; fi
+    # No cookie: this is a cross-origin caller, not the on-router UI.
+    # SameSite=Strict never sends the cookie cross-site, and Secure can't be
+    # set (this is served over plain HTTP), so cross-origin auth instead uses
+    # the same token /login returned as "session", carried explicitly on
+    # every request — as "_csrf" in the body for POST (the existing CSRF
+    # field already serves this purpose) or as "session" in the query string
+    # for GET, which has no body to carry it in.
+    if [ "$METHOD" = "POST" ]; then
+        bodyval _csrf
+    else
+        qsval session
+    fi
+}
+
+session_valid() {
+    local sid="$1"
+    [ -z "$sid" ] && return 1
+    case "$sid" in
+        *[!a-f0-9]*|"") return 1 ;;
+    esac
+    [ ${#sid} -ne 32 ] && return 1
+    ubus -S call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"values"'
+}
+
+do_login() {
+    local user pass sid
+    user=$(bodyval username); pass=$(bodyval password)
+    [ -z "$user" ] && user="root"
+
+    # Only root is accepted. rpcd would happily authenticate other accounts if
+    # they existed, but this appliance has exactly one administrator and
+    # narrowing it here removes a whole class of surprise.
+    [ "$user" != "root" ] && { send_headers "403 Forbidden"; json_error "Only the 'root' account may log in."; exit 0; }
+
+    if [ -z "$pass" ]; then
+        send_headers "401 Unauthorized"; json_error "Password required."; exit 0
+    fi
+
+    json_init
+    json_add_string username "$user"
+    json_add_string password "$pass"
+    json_add_int timeout "$SESSION_TIMEOUT"
+    local payload; payload=$(json_dump)
+
+    local resp; resp=$(ubus -S call session login "$payload" 2>/dev/null)
+    sid=$(printf '%s' "$resp" | sed -n 's/.*"ubus_rpc_session":"\([a-f0-9]*\)".*/\1/p')
+
+    if [ -z "$sid" ]; then
+        # A deliberate delay on failure. This box has no fail2ban and the login
+        # endpoint is reachable by anything on the LAN; a one-second floor makes
+        # brute-forcing a password impractical at negligible cost to a human.
+        sleep 1
+        log "failed login attempt from ${REMOTE_ADDR:-unknown}"
+        send_headers "401 Unauthorized"; json_error "Invalid password."; exit 0
+    fi
+
+    # Grant this session the ACLs it needs to talk to ubus/uci.
+    ubus -S call session grant \
+        "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"*\",\"read\"],[\"*\",\"write\"]]}" >/dev/null 2>&1
+
+    log "successful login from ${REMOTE_ADDR:-unknown}"
+
+    # HttpOnly keeps the token out of reach of any script on the page.
+    # SameSite=Strict blocks cross-site request forgery against the API.
+    # Secure is intentionally NOT set: this is served over plain HTTP on the
+    # LAN, and setting it would make the cookie silently unusable.
+    send_headers "200 OK" "Set-Cookie: mwsession=$sid; Path=/; HttpOnly; SameSite=Strict"
+    json_ok "$(printf '%s,%s' "$(jstr session "$sid")" "$(jnum timeout "$SESSION_TIMEOUT")")"
+    exit 0
+}
+
+do_logout() {
+    local sid; sid=$(get_session_token)
+    [ -n "$sid" ] && ubus -S call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1
+    send_headers "200 OK" "Set-Cookie: mwsession=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+    json_ok
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
+# Unauthenticated endpoints.
+# Requests arriving through the website tunnel come from the router itself.
+# They must use the website's portal token: guessing the router password
+# that way is not offered (the relay host is a shared server).
+if [ "$ROUTE" = "/login" ]; then
+    case "${REMOTE_ADDR:-}" in
+        127.0.0.1|::1|"$(uci -q get network.lan.ipaddr | cut -d/ -f1)")
+            send_headers "403 Forbidden"; json_error "Password sign-in is not available through the remote tunnel."; exit 0 ;;
+    esac
+fi
+
+case "$ROUTE" in
+    /login)  [ "$METHOD" = "POST" ] || fail "POST required." "405 Method Not Allowed"; do_login ;;
+    /logout) do_logout ;;
+    /ping)   send_headers; json_ok "$(jstr service mwadmin)"; exit 0 ;;
+esac
+
+# Portal token: lets the owner's website relay (which has already
+# authenticated its own user account) act on this router without knowing the
+# root password. The token is a long random secret generated on this router
+# and stored at /etc/mwadmin/portal_token; no file, no feature. It travels as
+# "_portal" in the JSON body (POST) or query string (GET) — the same two
+# places a session token already travels, for the same reason (uhttpd does
+# not pass custom headers through to CGI).
+PORTAL_OK=0
+if [ -s /etc/mwadmin/portal_token ]; then
+    if [ "$METHOD" = "POST" ]; then ptok=$(bodyval _portal); else ptok=$(qsval _portal); fi
+    case "$ptok" in
+        *[!a-f0-9]*|"") ;;
+        *) [ ${#ptok} -ge 48 ] && [ "$ptok" = "$(cat /etc/mwadmin/portal_token 2>/dev/null)" ] && PORTAL_OK=1 ;;
+    esac
+fi
+
+# Everything past this point requires a valid session.
+SID=$(get_session_token)
+if [ "$PORTAL_OK" = "1" ]; then
+    SID="portal"
+elif ! session_valid "$SID"; then
+    send_headers "401 Unauthorized"
+    json_error "Not authenticated."
+    exit 0
+fi
+
+# CSRF defence for state-changing requests. SameSite=Strict already blocks the
+# cross-site case in every browser that matters; this is the belt to that
+# suspenders, and costs one string comparison.
+#
+# The token travels in the JSON body as "_csrf", not as a custom header.
+# uhttpd's CGI handler does not forward arbitrary X-* request headers into the
+# CGI environment at all — confirmed directly: an X-MW-Token header sent by
+# the client simply never appears as HTTP_X_MW_TOKEN here, so a header-based
+# check fails 100% of the time, for everyone, regardless of whether the token
+# itself is correct. The body, by contrast, is read directly off stdin via
+# CONTENT_LENGTH above and is exactly how the password reaches /login, so it
+# is known to arrive intact.
+if [ "$METHOD" = "POST" ] && [ "$PORTAL_OK" != "1" ]; then
+    body_token=$(bodyval _csrf)
+    if [ "$body_token" != "$SID" ]; then
+        send_headers "403 Forbidden"
+        json_error "Missing or invalid CSRF token."
+        exit 0
+    fi
+fi
+
+. /usr/lib/mwadmin/api.sh
+
+# The backup download writes its own headers (a file, not JSON); sending the
+# JSON ones first put them inside the downloaded file and broke every backup.
+[ "$ROUTE" = "/system/backup" ] || send_headers
+api_dispatch "$ROUTE" "$METHOD"

@@ -1,0 +1,96 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap");
+
+/* Baytaar look for the router panel pages (panel.html, easy.html).
+   Loaded after the panel's own stylesheet. The default is a dim light theme:
+   soft grey-blue paper instead of white. The panel's dark theme (the toggle
+   in the top bar) is left exactly as it is. */
+
+html:not([data-theme="dark"]) {
+  --bg:        #e8ebf0;
+  --surface:   #f6f7f9;
+  --surface-2: #eceef2;
+  --border:    #d3d8e0;
+  --text:      #18202c;
+  --text-dim:  #4a5567;
+  --text-mute: #788395;
+
+  --accent:      #2c62d6;
+  --accent-soft: #dfe7f8;
+  --ok:          #17794f;
+  --ok-soft:     #d9ecdf;
+  --warn:        #99600a;
+  --warn-soft:   #f2e6cf;
+  --danger:      #b3362c;
+  --danger-soft: #f3dcd9;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(24,32,44,.05), 0 6px 20px rgba(24,32,44,.06);
+  --shadow-lg: 0 14px 36px rgba(24,32,44,.18);
+}
+
+html:not([data-theme="dark"]) body { background: var(--bg); }
+html:not([data-theme="dark"]) input:not([type=checkbox]):not([type=radio]),
+html:not([data-theme="dark"]) select,
+html:not([data-theme="dark"]) textarea { background: #fbfcfd; border-color: #c4cad4; }
+html:not([data-theme="dark"]) input:focus,
+html:not([data-theme="dark"]) select:focus,
+html:not([data-theme="dark"]) textarea:focus { background: #fff; box-shadow: 0 0 0 3px rgba(44,98,214,.16); }
+html:not([data-theme="dark"]) .topbar { background: rgba(246,247,249,.92); backdrop-filter: saturate(140%) blur(10px); }
+html:not([data-theme="dark"]) .stat { background: #fbfcfd; }
+html:not([data-theme="dark"]) .btn-primary { box-shadow: inset 0 -1px 0 rgba(0,0,0,.14); }
+
+/* icon in the theme toggle and nav links */
+.topbar .btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.topbar .btn svg + span, .topbar .btn span + svg { margin-left: 5px; }
+
+@media (max-width: 620px) {
+  .topbar .btn .lbl { display: none; }   /* icon-only buttons on phones */
+  .topbar-right { gap: 4px; }
+}
+
+/* ---------- type, depth and motion, matching the Baytaar home page ---------- */
+:root {
+  --sans: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+body { font-family: var(--sans); font-weight: 500; }
+h1, h2, h3, .topbar-title, .stat .v, .wan-name, .page-head h2 { font-family: "Sora", var(--sans); letter-spacing: -.025em; }
+.page-head h2 { font-size: 26px; font-weight: 700; }
+
+html:not([data-theme="dark"]) {
+  --bg: #e4e7ee; --surface: #f7f8fb; --surface-2: #eceef4;
+  --text: #0f172a; --text-dim: #475569; --text-mute: #7c8799;
+  --accent: #2563eb; --accent-soft: rgba(37,99,235,.1);
+  --radius: 18px; --radius-sm: 11px;
+  --shadow: 0 1px 1px rgba(15,23,42,.04), 0 10px 30px -12px rgba(15,23,42,.18);
+}
+html:not([data-theme="dark"]) body {
+  background:
+    radial-gradient(60vmax 60vmax at -10% -10%, rgba(185,205,251,.55), transparent 60%),
+    radial-gradient(50vmax 50vmax at 110% 10%, rgba(181,233,240,.5), transparent 60%),
+    #e4e7ee;
+  background-attachment: fixed;
+}
+html:not([data-theme="dark"]) .card,
+html:not([data-theme="dark"]) .stat { border-color: rgba(255,255,255,.8); }
+.btn-primary, .wan-row.is-active .wan-prio, .brand-mark rect { transition: all .2s; }
+html:not([data-theme="dark"]) .btn-primary { background: linear-gradient(120deg, #2563eb, #06b6d4); border-color: transparent; box-shadow: 0 10px 22px -12px rgba(37,99,235,.85); }
+html:not([data-theme="dark"]) .sidebar a.active { background: linear-gradient(120deg, #2563eb, #06b6d4); color: #fff; box-shadow: 0 8px 18px -10px rgba(37,99,235,.8); }
+
+.btn { transition: transform .2s cubic-bezier(.2,.8,.2,1), box-shadow .2s, background .2s, border-color .2s; }
+.btn:hover:not(:disabled) { transform: translateY(-2px); }
+.btn:active:not(:disabled) { transform: translateY(0) scale(.98); }
+.sidebar a { transition: background .2s, color .2s, transform .2s cubic-bezier(.2,.8,.2,1); }
+.sidebar a:hover { transform: translateX(3px); }
+.stat, .card { transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s; }
+.stat:hover { transform: translateY(-3px); }
+
+/* each page slides up as it opens */
+@keyframes bt-rise { from { opacity: 0; transform: translateY(14px); } }
+#view > * { animation: bt-rise .5s cubic-bezier(.2,.8,.2,1) both; }
+#view > *:nth-child(2) { animation-delay: .06s; }
+#view > *:nth-child(3) { animation-delay: .12s; }
+#view > *:nth-child(4) { animation-delay: .18s; }
+#view > *:nth-child(n+5) { animation-delay: .24s; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

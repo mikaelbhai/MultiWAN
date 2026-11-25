@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- mikaelbhai.com sends its certificate without the Let's Encrypt
+     intermediate, and its newer chain ends at ISRG Root X2, which older
+     phones lack. Trusting Let's Encrypt's current intermediates (public
+     certificates, valid until 2027-2028) lets the app connect on any phone. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/le_intermediates" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
