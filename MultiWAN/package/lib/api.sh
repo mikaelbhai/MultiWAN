@@ -2842,6 +2842,8 @@ api_dispatch() {
         /wifi/keys:GET)           api_wifi_keys ;;
         /lines/exceptions:GET)    api_lines_exceptions_get ;;
         /lines/exceptions:POST)   api_lines_exceptions_set ;;
+        /lines/swaps:GET)         api_lines_swaps_get ;;
+        /lines/swaps:POST)        api_lines_swaps_set ;;
         /lines/calls:POST)        api_lines_calls ;;
         /lines/device:POST)       api_lines_device ;;
         /software/check:GET)      api_software_check ;;

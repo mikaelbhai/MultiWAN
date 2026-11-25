@@ -98,6 +98,82 @@ api_lines_exceptions_set() {
     json_ok "$(jstr message "$([ "$action" = add ] && echo "$dest now always uses $w (the others only if it is down)." || echo "Exception for $dest removed.")")"
 }
 
+# ADDRESS SWAPS: connections to one address are quietly sent to another that serves the
+# same thing. Found 2026-11-25: Transworld resets every connection to 104.17.148.22
+# (a shared Cloudflare address, so many sites can be handed it, not just speedtest.net),
+# while 104.17.147.22 works. Cloudflare serves any of its sites on any of its addresses
+# (the name inside the request decides), so swapping the address is invisible to the
+# browser. It works for every device and every DNS server, including devices with their
+# own DNS, and for the router's own traffic.
+#
+# /etc/mwadmin/addr_swaps, one per line:  <from ip> <to ip> <note>
+# It is turned into nftables rules in /etc/nftables.d/25-mwswap.nft, loaded with the
+# firewall, so it survives reboots and firewall reloads.
+LINE_SWAP=/etc/mwadmin/addr_swaps
+SWAP_NFT=/etc/nftables.d/25-mwswap.nft
+
+lines_swaps_write() {
+    local from to note rules=""
+    if [ -s "$LINE_SWAP" ]; then
+        while read -r from to note; do
+            case "$from" in ''|\#*) continue ;; esac
+            printf '%s' "$from" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || continue
+            printf '%s' "$to" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || continue
+            rules="$rules    ip daddr $from dnat ip to $to
+"
+        done < "$LINE_SWAP"
+    fi
+    if [ -z "$rules" ]; then rm -f "$SWAP_NFT"; return 0; fi
+    {
+        echo "chain mw_swap_pre {"
+        echo "    type nat hook prerouting priority dstnat - 5; policy accept;"
+        printf '%s' "$rules"
+        echo "}"
+        echo "chain mw_swap_out {"
+        echo "    type nat hook output priority -105; policy accept;"
+        printf '%s' "$rules"
+        echo "}"
+    } > "$SWAP_NFT"
+}
+
+api_lines_swaps_get() {
+    local first=1 from to note
+    printf '{"ok":true,"swaps":['
+    if [ -s "$LINE_SWAP" ]; then
+        while read -r from to note; do
+            case "$from" in ''|\#*) continue ;; esac
+            [ $first -eq 0 ] && printf ','
+            first=0
+            printf '{%s,%s,%s}' "$(jstr from "$from")" "$(jstr to "$to")" "$(jstr note "$note")"
+        done < "$LINE_SWAP"
+    fi
+    printf ']}\n'
+}
+
+# Body: {"action":"add"|"del", "from":"1.2.3.4", "to":"1.2.3.5", "note":"why"}
+api_lines_swaps_set() {
+    local action from to note tmp re='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+    action=$(bodyval action); from=$(bodyval from); to=$(bodyval to); note=$(bodyval note)
+    printf '%s' "$from" | grep -qE "$re" || { json_error "Give the address to replace, like 104.17.148.22."; return; }
+    note=$(printf '%s' "$note" | tr -cd 'A-Za-z0-9 .,_:;()/-' | cut -c1-80)
+    mkdir -p /etc/mwadmin; touch "$LINE_SWAP"
+    tmp="$LINE_SWAP.new"
+    grep -v -E "^$(printf '%s' "$from" | sed 's/\./\\./g')[[:space:]]" "$LINE_SWAP" > "$tmp" 2>/dev/null
+    case "$action" in
+        add)
+            printf '%s' "$to" | grep -qE "$re" || { rm -f "$tmp"; json_error "Give the address to use instead."; return; }
+            [ "$from" != "$to" ] || { rm -f "$tmp"; json_error "The two addresses are the same."; return; }
+            printf '%s %s %s\n' "$from" "$to" "$note" >> "$tmp" ;;
+        del) ;;
+        *) rm -f "$tmp"; json_error "Unknown action."; return ;;
+    esac
+    mv "$tmp" "$LINE_SWAP"
+    lines_swaps_write
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    log "address swap $action: $from -> ${to:-none}"
+    json_ok "$(jstr message "$([ "$action" = add ] && echo "Connections to $from now go to $to instead." || echo "Swap for $from removed.")")"
+}
+
 # Called from mwan_rules_regenerate after the local-network rules.
 lines_rules() {
     local s w ip apps n=0

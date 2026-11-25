@@ -37,6 +37,10 @@ ex_conf() {
         echo "pid-file=$EX_DIR/dnsmasq.pid"
         for s in $(uci -q get dhcp.@dnsmasq[0].server); do echo "server=$s"; any=1; done
         [ $any -eq 1 ] || { echo "server=1.1.1.1"; echo "server=8.8.8.8"; }
+        # Fixed answers set on the main resolver (the dhcp "address" list, e.g. a site pinned to the one
+        # address that works on a line) must apply here too: this resolver asks the upstream servers
+        # directly, so without these lines it would hand out the unpinned answers.
+        for s in $(uci -q get dhcp.@dnsmasq[0].address); do echo "address=$s"; done
         # local names (device names, multiwan.router) still come from the main resolver
         echo "server=/lan/127.0.0.1"
         echo "server=/router/127.0.0.1"
