@@ -356,12 +356,61 @@ main { max-width: 1120px; margin: 0 auto; padding: 30px 20px 64px; }
 .pl-r .rn span { display: block; font-size: 12px; color: var(--ink-3); }
 .pl-add { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .pl-add select, .pl-add input { flex: 1; min-width: 160px; box-sizing: border-box; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line-2); background: rgba(255,255,255,.75); font: inherit; font-size: 14px; }
+/* a place is ONE tile in the picker */
+#pick .ptile { display: flex; align-items: center; gap: 12px; text-align: left; padding: 11px 16px 11px 12px; border-radius: 16px; }
+#pick .ptile .pt-ico { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; background: var(--accent-soft); color: var(--a1); flex: none; }
+#pick .ptile.on .pt-ico { background: rgba(255,255,255,.22); color: #fff; }
+#pick .ptile .pt-dots { display: inline-flex; gap: 4px; margin-left: 6px; }
+#pick .ptile .pt-dots i { width: 7px; height: 7px; box-shadow: none !important; }
+/* place tabs: what is shared, and what is each router's own */
+.ptabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 18px 0 0; padding: 4px; background: var(--inset); border: 1px solid var(--line); border-radius: 14px; }
+.ptab { flex: 1 1 auto; border: 0; background: none; padding: 10px 14px; border-radius: 11px; font: 700 13.5px var(--sans); color: var(--ink-2); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: background .2s, color .2s, box-shadow .2s; white-space: nowrap; }
+.ptab:hover { color: var(--ink); background: rgba(255,255,255,.6); }
+.ptab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(15,23,42,.08), 0 6px 16px -10px rgba(15,23,42,.35); }
+.ptab small { font-weight: 600; color: var(--ink-3); }
+.ptab .kind { font: 700 10px var(--sans); letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--a1); }
+.ptab .kind.own { background: var(--inset); color: var(--ink-2); }
+.banner { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-radius: var(--r-md); margin: 0 0 14px; font-size: 13.5px; line-height: 1.5; }
+.banner.shared { background: var(--accent-soft); color: #1e3a8a; }
+.banner.own { background: var(--inset); color: var(--ink-2); border: 1px solid var(--line); }
+.banner svg { flex: none; margin-top: 2px; }
+.banner b { color: inherit; }
+/* people and devices: one list for the whole place */
+.pp-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; padding: 13px 22px; border-top: 1px solid var(--line); align-items: center; transition: background .2s; }
+.pp-row:hover { background: rgba(255,255,255,.55); }
+.pp-row.away { opacity: .62; }
+.pp-av { width: 40px; height: 40px; border-radius: 13px; display: grid; place-items: center; font: 700 15px var(--display); color: #fff; background: var(--grad); }
+.pp-row.away .pp-av { background: var(--inset); color: var(--ink-3); }
+.pp-row.wait .pp-av { background: var(--warn-soft); color: var(--warn); }
+.pp-name { font: 600 15px var(--display); letter-spacing: -.015em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pp-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: var(--ink-3); font-size: 12.5px; }
+.pp-meta span { display: inline-flex; align-items: center; gap: 5px; }
+.pp-meta code { font: 500 12px var(--mono); color: var(--ink-2); }
+.pp-where { display: inline-flex; align-items: center; gap: 6px; }
+.pp-act { display: flex; gap: 6px; align-items: center; }
+.pp-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 22px 14px; }
+.pp-tools input { flex: 1; min-width: 180px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: rgba(255,255,255,.75); font: inherit; font-size: 14px; }
+.pp-filter { display: inline-flex; background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.pp-filter button { border: 0; background: none; padding: 6px 11px; border-radius: 8px; font: 700 12.5px var(--sans); color: var(--ink-2); cursor: pointer; }
+.pp-filter button.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(15,23,42,.1); }
+/* a router's own network numbers */
+.netgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; padding: 4px 22px 18px; }
+.netgrid div { background: var(--inset); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; }
+.netgrid span { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.netgrid b { display: block; font: 600 14.5px var(--mono); margin-top: 3px; overflow-wrap: anywhere; }
+.pl-manage { margin-top: 12px; }
+@media (max-width: 640px) {
+  .ptab { flex: 1 1 45%; padding: 9px 8px; font-size: 13px; }
+  .pp-row { grid-template-columns: 36px minmax(0, 1fr); padding: 12px 16px; }
+  .pp-act { grid-column: 2; }
+  .pp-tools { padding: 0 16px 12px; }
+}
 @media (max-width: 640px) {
   .place { padding: 16px; }
   .pl-chain { flex-direction: column; overflow: visible; }
   .pl-link { flex-basis: 22px; transform: rotate(90deg); }
   .pl-head .f-ico { display: none; }
-  .pl-head > div { flex-basis: 100%; }
+  .pl-head > div { flex: 1 1 100% !important; }
   #pick .pgroup { width: 100%; box-sizing: border-box; }
   #pick .pg-row { flex-direction: column; align-items: stretch; }
   #pick .pg-row button, #pick .pg-row button:first-child, #pick .pg-row button:last-child { border-radius: 0; }
@@ -950,7 +999,17 @@ function load() {
   call('portal.php/routers').then(function (j) {
     lastList = j.routers; lastNow = j.now;
     render(j.routers, j.now);
-    j.routers.forEach(function (r) {
+    var sp = selPlace(j.routers);
+    if (sp) {
+      // a place: the main router's data serves the shared tabs; another router is loaded fully only when its tab is open,
+      // otherwise just its waiting-to-sign-in list (shown under People & devices)
+      var pmain = placeMainOf(j.routers, sp.location_id);
+      placeMembers(j.routers, sp.location_id).forEach(function (m) {
+        if (m.id === pmain.id || placeTab === 'r' + m.id) { if (m.reachable) extras(m); else paintExtras(m.id, true); }
+        else if (m.reachable) call('api.php/r/' + m.id + '/guests').then(function (g) { X[m.id] = X[m.id] || {}; X[m.id].guests = g; paintPeopleHere(); }).catch(function () {});
+      });
+      paintPeopleHere();
+    } else j.routers.forEach(function (r) {
       if (j.routers.length > 1 && r.id !== selId) return;      // only the router being looked at
       if (r.reachable) extras(r); else paintExtras(r.id, true);
     });
@@ -979,10 +1038,13 @@ function pickRouter(list) {
   list.forEach(function (r) {
     if (done[r.id]) return;
     if (!r.location_id) { done[r.id] = 1; html += btn(r, (r.site && r.site.location) || (r.reachable ? 'No place set' : 'Offline')); return; }
+    // a place is ONE tile: one connection, however many routers it has
     var mem = placeMembers(list, r.location_id);
     mem.forEach(function (m) { done[m.id] = 1; });
-    html += '<div class="pgroup"><div class="pg-h">' + ic('building', 'sm') + esc(r.location || 'Place') + ' · one connection</div><div class="pg-row">' +
-      mem.map(function (m) { return btn(m, m.role === 'main' ? 'Main router' : (m.reachable ? 'Follows the main router' : 'Offline')); }).join('') + '</div></div>';
+    var on = mem.some(function (m) { return m.id === selId; });
+    html += '<button class="ptile' + (on ? ' on' : '') + '" data-pick="' + mem[0].id + '" data-place="1"><span class="pt-ico">' + ic('building', 'sm') + '</span>' +
+      '<span><b>' + esc(r.location || 'Place') + '<span class="pt-dots">' + mem.map(function (m) { return '<i' + (routerUp(m) ? ' class="up"' : '') + ' title="' + esc(m.name) + '"></i>'; }).join('') + '</span></b>' +
+      '<small>' + mem.length + ' routers · one connection</small></span></button>';
   });
   if (pick.getAttribute('data-k') !== html) { pick.innerHTML = html; pick.setAttribute('data-k', html); }
   $$('[data-pick]', pick).forEach(function (b) {
@@ -1003,7 +1065,11 @@ function placeMembers(list, lid) {
     .sort(function (a, b) { return ((a.role === 'main') ? 0 : 1) - ((b.role === 'main') ? 0 : 1) || a.id - b.id; });
 }
 function routerUp(r) { return !!(r.reachable && r.site && r.site.internet); }
-var placeKey = '', placeDevs = { at: 0, lid: null, sig: '', list: [] };
+var placeKey = '', placeDevs = { at: 0, lid: null, sig: '', list: [] }, placeManage = false;
+var placeTab = (function () { try { return localStorage.getItem('bt-ptab') || 'people'; } catch (e) { return 'people'; } })();
+function placeTabValid(t, mem) { return t === 'people' || t === 'rules' || mem.some(function (r) { return t === 'r' + r.id; }); }
+function placeMainOf(list, lid) { var mem = placeMembers(list, lid); return mem.filter(function (r) { return r.role === 'main'; })[0] || mem[0]; }
+function selPlace(list) { var sel = list.filter(function (r) { return r.id === selId; })[0]; return sel && sel.location_id ? sel : null; }
 
 function placeSave(name, mainId, branchIds, msg) {
   return call('portal.php/location-save', 'POST', { name: name, main: mainId, branch: branchIds })
@@ -1018,7 +1084,7 @@ function loadPlaceDevs(r) {
     var sig = JSON.stringify(j.devices.map(function (d) { return [d.router_id, d.mac, d.name, d.ip, d.wifi]; }));
     if (sig === placeDevs.sig) return;
     placeDevs.sig = sig; placeDevs.list = j.devices;
-    placeKey = ''; renderPlace(lastList || []);
+    placeKey = ''; renderPlace(lastList || []); paintPeopleHere();
   }).catch(function () {});
 }
 
@@ -1053,7 +1119,8 @@ function renderPlace(all) {
   var mem = placeMembers(all, lid), main = mem.filter(function (r) { return r.role === 'main'; })[0] || mem[0];
   var others = all.filter(function (r) { return r.location_id !== lid; });
   var devs = placeDevs.lid === lid ? placeDevs.list : [];
-  var k = JSON.stringify([lid, name, mem.map(function (r) { return [r.id, r.name, r.role, routerUp(r), r.reachable]; }), others.map(function (r) { return [r.id, r.name]; }), placeDevs.lid === lid ? placeDevs.sig : '']);
+  if (!placeTabValid(placeTab, mem)) placeTab = 'people';
+  var k = JSON.stringify([lid, name, placeTab, placeManage, mem.map(function (r) { return [r.id, r.name, r.role, routerUp(r), r.reachable]; }), others.map(function (r) { return [r.id, r.name]; }), placeDevs.lid === lid ? placeDevs.sig : '']);
   loadPlaceDevs(sel);
   if (k === placeKey) return;
   placeKey = k;
@@ -1072,11 +1139,6 @@ function renderPlace(all) {
       (routerUp(r) ? (per[r.id] || 0) + ' device' + ((per[r.id] || 0) === 1 ? '' : 's') : (r.reachable ? 'No internet' : 'Offline')) + '</span></div></div>';
   });
 
-  var devHtml = devs.length ? devs.map(function (d) {
-    return '<div class="pl-dev">' + ic(d.wifi ? 'wifi' : 'cable', 'sm') + '<span class="dn">' + esc(d.name || d.host || 'Unnamed device') + '</span>' +
-      '<span class="dm">' + esc(d.ip || '') + '</span><span class="chip' + (d.role === 'main' ? ' main' : '') + '">' + esc(d.router) + '</span></div>';
-  }).join('') : '<p class="mix-note" style="margin:4px 0">' + (placeDevs.lid === lid ? 'No devices reported yet. Each router sends its list about once a minute.' : 'Loading…') + '</p>';
-
   var rows = mem.map(function (r) {
     return '<div class="pl-r"><span class="dot' + (routerUp(r) ? ' live' : '') + '" style="color:' + (routerUp(r) ? 'var(--ok)' : 'var(--bad)') + '"></span>' +
       '<div class="rn"><b>' + esc(r.name) + '</b><span>' + (r.role === 'main' ? 'Main router: holds the rules and makes the decisions' : 'Follows ' + esc(main.name) + ': same rules, reports what it sees') + '</span></div>' +
@@ -1085,17 +1147,27 @@ function renderPlace(all) {
       '<button class="btn ghost sm" data-pl-out="' + r.id + '" title="Take it out of ' + esc(name) + '">' + ic('x', 'sm') + 'Remove</button></div>';
   }).join('');
 
+  // the tabs say plainly what is shared and what each router keeps for itself
+  var tabs = '<div class="ptabs" role="tablist">' +
+    '<button class="ptab' + (placeTab === 'people' ? ' on' : '') + '" data-ptab="people">' + ic('users', 'sm') + 'People &amp; devices <small>' + devs.length + '</small></button>' +
+    '<button class="ptab' + (placeTab === 'rules' ? ' on' : '') + '" data-ptab="rules">' + ic('ban', 'sm') + 'Rules for everyone</button>' +
+    mem.map(function (r) {
+      return '<button class="ptab' + (placeTab === 'r' + r.id ? ' on' : '') + '" data-ptab="r' + r.id + '">' + ic('router', 'sm') + esc(r.name) +
+        '<span class="kind own">own</span></button>';
+    }).join('') + '</div>';
+
   box.innerHTML = '<div class="glass place">' +
     '<div class="pl-head"><div class="f-ico">' + ic('building') + '</div><div style="flex:1;min-width:0"><h2 data-pl-name>' + esc(name) + '</h2>' +
       '<p>' + mem.length + ' router' + (mem.length === 1 ? '' : 's') + ' · one internet connection · ' + devs.length + ' device' + (devs.length === 1 ? '' : 's') + ' connected</p></div>' +
       '<span class="pill ' + (allUp ? 'on' : (anyUp ? 'mid' : 'off')) + '">' + (allUp ? 'All online' : (anyUp ? esc(down.join(', ')) + ' offline' : 'Offline')) + '</span>' +
+      '<button class="btn sm" data-pl-manage>' + ic('sliders', 'sm') + (placeManage ? 'Done' : 'Manage routers') + '</button>' +
       '<button class="icon-btn" data-pl-rename title="Rename this place">' + ic('pencil', 'sm') + '</button></div>' +
     '<div class="pl-chain">' + chain + '</div>' +
-    '<div class="pl-sec"><div class="pl-st">' + ic('devices', 'sm') + 'Devices in ' + esc(name) + '<span class="grow"></span>' + devs.length + '</div>' + devHtml + '</div>' +
-    '<div class="pl-sec"><div class="pl-st">' + ic('router', 'sm') + 'Routers in ' + esc(name) + '</div>' + rows +
+    (placeManage ? '<div class="pl-sec pl-manage"><div class="pl-st">' + ic('router', 'sm') + 'Routers in ' + esc(name) + '</div>' + rows +
       '<div class="pl-add">' + (others.length ? '<select data-pl-pick>' + others.map(function (r) { return '<option value="' + r.id + '">' + esc(r.name) + (r.location ? ' (now in ' + esc(r.location) + ')' : '') + '</option>'; }).join('') + '</select>' +
         '<button class="btn sm" data-pl-add>' + ic('arrow', 'sm') + 'Add to ' + esc(name) + '</button>' : '') +
-        '<button class="btn primary sm" data-pl-new>' + ic('router', 'sm') + 'Connect a new router</button></div></div>' +
+        '<button class="btn primary sm" data-pl-new>' + ic('router', 'sm') + 'Connect a new router</button></div></div>' : '') +
+    tabs +
     '</div>';
 
   var branchOf = function (exceptId, extra) { return mem.filter(function (r) { return r.id !== exceptId && r.id !== main.id; }).map(function (r) { return r.id; }).concat(extra || []); };
@@ -1129,7 +1201,16 @@ function renderPlace(all) {
     var r = others.filter(function (x) { return x.id === id; })[0];
     placeSave(name, main.id, branchOf(-1, [id]), r.name + ' joined ' + name + ' and follows ' + main.name + '.');
   };
-  box.querySelector('[data-pl-new]').onclick = addRouterDialog;
+  var newB = box.querySelector('[data-pl-new]'); if (newB) newB.onclick = addRouterDialog;
+  box.querySelector('[data-pl-manage]').onclick = function () { placeManage = !placeManage; placeKey = ''; renderPlace(lastList || []); };
+  $$('[data-ptab]', box).forEach(function (b) {
+    b.onclick = function () {
+      placeTab = b.getAttribute('data-ptab');
+      try { localStorage.setItem('bt-ptab', placeTab); } catch (e) {}
+      placeKey = ''; lastKey = ''; firstPaint = true;
+      renderPlace(lastList || []); render(lastList, lastNow); load();
+    };
+  });
   box.querySelector('[data-pl-rename]').onclick = function () {
     var h = box.querySelector('[data-pl-name]');
     h.outerHTML = '<div class="pl-add" style="margin:0"><input type="text" maxlength="60" data-pl-nm value="' + esc(name) + '"><button class="btn primary sm" data-pl-nmsave>Save</button></div>';
@@ -1138,6 +1219,141 @@ function renderPlace(all) {
     box.querySelector('[data-pl-nmsave]').onclick = save;
     inp.onkeydown = function (e) { if (e.key === 'Enter') save(); if (e.key === 'Escape') { inp.blur(); placeKey = ''; renderPlace(lastList || []); } };
   };
+}
+
+/* People & devices: everyone using the internet in a place, on any of its routers, in ONE list.
+   Joined by hardware address: the sign-in list (kept by the main router, shared with the others), the devices each
+   router sees right now (name, address, which router, Wi-Fi or cable), and devices waiting to sign in on any router. */
+var peopleKey = '', peopleFilter = 'all';
+function paintPeopleHere() { var pe = $('[data-people]'); if (pe) paintPeople(parseInt(pe.getAttribute('data-people'), 10)); }
+function paintPeople(lid) {
+  var el = $('[data-people="' + lid + '"]'); if (!el) return;
+  var all = lastList || [], mem = placeMembers(all, lid), main = placeMainOf(all, lid);
+  if (!main) return;
+  var place = main.location || 'this place';
+  var gm = (X[main.id] || {}).guests;
+  var devs = placeDevs.lid === lid ? placeDevs.list : [];
+  var waiting = [];
+  mem.forEach(function (m) {
+    var g = (X[m.id] || {}).guests;
+    (g && g.waiting || []).forEach(function (w) { waiting.push({ mac: w.mac, ip: w.ip, host: w.host, router: m.name, role: m.role }); });
+  });
+  var key = JSON.stringify([gm, devs, waiting, peopleFilter, main.reachable]);
+  if (key === peopleKey && el.firstChild) return;
+  peopleKey = key;
+
+  var by = {};
+  devs.forEach(function (d) { by[d.mac] = { mac: d.mac, name: d.name, host: d.host, ip: d.ip, router: d.router, role: d.role, wifi: d.wifi, online: true }; });
+  (gm && gm.guests || []).forEach(function (g) {
+    var x = by[g.mac] || (by[g.mac] = { mac: g.mac, online: false, ip: g.ip, host: g.host });
+    x.person = g.name; x.phone = g.phone; x.since = g.ts; x.signed = true;
+  });
+  waiting.forEach(function (w) {
+    var x = by[w.mac] || (by[w.mac] = { mac: w.mac, ip: w.ip, host: w.host, router: w.router, role: w.role, online: true });
+    if (!x.signed) x.waiting = true;
+  });
+  var rowsAll = Object.keys(by).map(function (m) { return by[m]; });
+  rowsAll.forEach(function (x) { x.label = x.person || x.name || x.host || 'Unknown device'; x.state = x.waiting ? 'wait' : (x.online ? 'on' : 'away'); });
+  var order = { wait: 0, on: 1, away: 2 };
+  rowsAll.sort(function (a, b) { return order[a.state] - order[b.state] || a.label.localeCompare(b.label); });
+  var n = { all: rowsAll.length, on: 0, wait: 0, away: 0 };
+  rowsAll.forEach(function (x) { n[x.state]++; });
+  var rows = rowsAll.filter(function (x) { return peopleFilter === 'all' || x.state === peopleFilter; });
+
+  var dis = main.reachable ? '' : ' disabled';
+  var left = (gm && gm.paused_until) ? Math.max(1, Math.ceil((gm.paused_until - gm.now) / 60)) : 0;
+  var head = '<div class="sec-h"><h3>' + ic('users') + 'People &amp; devices <small>' + (n.on + n.wait) + ' connected now</small></h3>' +
+    (gm ? '<label class="auto" title="New devices give a name and mobile number once before they get internet"><input type="checkbox" data-pp-signin' + (gm.enabled ? ' checked' : '') + dis + '><span class="t"></span><span>Sign-in ' + (!gm.enabled ? 'off' : left ? 'paused' : 'on') + '</span></label>' : '') + '</div>' +
+    '<p class="sec-sub">Everyone using the internet in ' + esc(place) + ', on any router. Names, sign-ins and approvals are shared: someone who signed in once is known on every router here.' +
+      (gm && gm.enabled ? (left ? ' Sign-in is switched off for ' + left + ' more min. <button class="link" data-pp-pause="0"' + dis + '>Turn it back on</button>' :
+        ' <button class="link" data-pp-pause="30"' + dis + '>Switch sign-in off for 30 minutes</button>') : '') + '</p>' +
+    '<div class="pp-tools"><input type="search" data-pp-q placeholder="Find a person, device or address">' +
+      '<div class="pp-filter" role="group">' + [['all', 'All'], ['on', 'Connected'], ['wait', 'Waiting'], ['away', 'Away']].map(function (f) {
+        return '<button data-pp-f="' + f[0] + '"' + (peopleFilter === f[0] ? ' class="on"' : '') + '>' + f[1] + ' ' + n[f[0]] + '</button>'; }).join('') + '</div></div>';
+
+  if (!gm && !devs.length) { el.innerHTML = head + '<div class="q-row muted">' + (main.reachable ? 'Loading…' : esc(main.name) + ' is offline; the sign-in list is kept there.') + '</div>'; wirePeople(); return; }
+
+  var body = rows.map(function (x) {
+    var initials = x.label.replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 2).map(function (w) { return w.charAt(0).toUpperCase(); }).join('') || '?';
+    var tag = x.state === 'wait' ? '<span class="tag mid">Waiting to sign in</span>' : (x.signed && x.online ? '<span class="tag ok">Signed in</span>' : (x.state === 'away' ? '<span class="tag">Away</span>' : ''));
+    var when = x.since ? new Date(x.since * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
+    var meta = [];
+    if (x.online && x.router) meta.push('<span class="pp-where">' + ic(x.wifi ? 'wifi' : 'cable', 'sm') + '<span class="chip' + (x.role === 'main' ? ' main' : '') + '">' + esc(x.router) + '</span>' + (x.wifi ? 'Wi-Fi' : 'cable') + '</span>');
+    if (x.ip) meta.push('<span><code>' + esc(x.ip) + '</code></span>');
+    if (x.person && (x.name || x.host) && (x.name || x.host) !== x.person) meta.push('<span>' + ic('devices', 'sm') + esc(x.name || x.host) + '</span>');
+    if (x.phone) meta.push('<span>' + ic('phone', 'sm') + '<a href="tel:' + esc(x.phone) + '">' + esc(x.phone) + '</a></span>');
+    if (when) meta.push('<span>' + ic('clock', 'sm') + 'since ' + esc(when) + '</span>');
+    var act = x.state === 'wait'
+      ? '<button class="btn primary sm" data-pp-allow="' + esc(x.mac) + '" data-pp-host="' + esc(x.host || '') + '"' + dis + '>' + ic('check', 'sm') + 'Allow</button>'
+      : (x.signed ? '<button class="btn ghost sm" data-pp-del="' + esc(x.mac) + '"' + dis + ' title="Forget this sign-in on every router">' + ic('x', 'sm') + '<span>Forget</span></button>' : '');
+    return '<div class="pp-row ' + x.state + '" data-pp-text="' + esc((x.label + ' ' + (x.host || '') + ' ' + (x.name || '') + ' ' + (x.ip || '') + ' ' + (x.phone || '') + ' ' + (x.router || '') + ' ' + x.mac).toLowerCase()) + '">' +
+      '<div class="pp-av">' + esc(initials) + '</div>' +
+      '<div style="min-width:0"><div class="pp-name">' + esc(x.label) + ' ' + tag + '</div><div class="pp-meta">' + meta.join('') + '</div></div>' +
+      '<div class="pp-act">' + act + '</div></div>';
+  }).join('');
+  el.innerHTML = head + (body || '<div class="q-row muted">' + ic('inbox', 'sm') + 'Nobody here in this list.</div>') +
+    '<div class="q-note">A device is known by its hardware address. "Allow" lets in things that cannot fill a form, such as a TV or printer. "Forget" removes a sign-in on every router; the person is asked again next time.</div>';
+  wirePeople();
+
+  function wirePeople() {
+    var base = 'api.php/r/' + main.id;
+    function refresh() { return call(base + '/guests').then(function (j) { X[main.id] = X[main.id] || {}; X[main.id].guests = j; peopleKey = ''; paintPeople(lid); }); }
+    var q = $('[data-pp-q]', el);
+    if (q) q.oninput = function () { var v = q.value.trim().toLowerCase(); $$('[data-pp-text]', el).forEach(function (r) { r.hidden = v && r.getAttribute('data-pp-text').indexOf(v) < 0; }); };
+    $$('[data-pp-f]', el).forEach(function (b) { b.onclick = function () { peopleFilter = b.getAttribute('data-pp-f'); peopleKey = ''; paintPeople(lid); }; });
+    var tg = $('[data-pp-signin]', el);
+    if (tg) tg.onchange = function () {
+      tg.disabled = true;
+      call(base + '/guests', 'POST', { enabled: tg.checked ? '1' : '0' }).then(function (j) { toast((j.message || 'Saved') + ' Every router follows within a minute.'); return refresh(); })
+        .catch(function (e) { toast(e.message, true); peopleKey = ''; paintPeople(lid); });
+    };
+    $$('[data-pp-pause]', el).forEach(function (b) {
+      b.onclick = function () {
+        b.disabled = true;
+        call(base + '/guests', 'POST', { pause: b.getAttribute('data-pp-pause') }).then(function (j) { toast(j.message || 'Saved'); return refresh(); })
+          .catch(function (e) { toast(e.message, true); b.disabled = false; });
+      };
+    });
+    $$('[data-pp-del]', el).forEach(function (b) {
+      b.onclick = function () {
+        if (!b.armed) { b.armed = true; b.lastChild.textContent = 'Sure?'; setTimeout(function () { b.armed = false; if (b.lastChild) b.lastChild.textContent = 'Forget'; }, 3000); return; }
+        b.disabled = true;
+        call(base + '/guests/remove', 'POST', { mac: b.getAttribute('data-pp-del') }).then(function (j) { toast(j.message || 'Forgotten'); return refresh(); })
+          .catch(function (e) { toast(e.message, true); b.disabled = false; });
+      };
+    });
+    $$('[data-pp-allow]', el).forEach(function (b) {
+      b.onclick = function () {
+        b.disabled = true;
+        // approved on the main router, which every router follows
+        call(base + '/guests/allow', 'POST', { mac: b.getAttribute('data-pp-allow'), name: b.getAttribute('data-pp-host') || '' })
+          .then(function (j) { toast((j.message || 'Allowed') + ' Every router lets it in within a minute.'); return refresh(); })
+          .catch(function (e) { toast(e.message, true); b.disabled = false; });
+      };
+    });
+  }
+}
+
+/* A router's own network: its address and the addresses it hands out (never the same as another router's). */
+function paintLan(id) {
+  var el = $('[data-lan="' + id + '"]'); if (!el) return;
+  var st = X[id] = X[id] || {};
+  var r = (lastList || []).filter(function (x) { return x.id === id; })[0];
+  if (!st.lan && !st.lanAsk && r && r.reachable) {
+    st.lanAsk = true;
+    call('api.php/r/' + id + '/lan').then(function (j) { st.lan = j; paintLan(id); }).catch(function () { st.lan = { failed: true }; paintLan(id); });
+  }
+  var l = st.lan, head = '<div class="sec-h"><h3>' + ic('port') + 'Network on this router</h3></div>' +
+    '<p class="sec-sub">Each router hands out its own addresses, so they never clash. Change these in the full control panel.</p>';
+  if (!l) { el.innerHTML = head + '<div class="q-row muted">' + (r && r.reachable ? 'Loading…' : 'Router is offline.') + '</div>'; return; }
+  if (l.failed || !l.ipaddr) { el.innerHTML = head + '<div class="q-row muted">Could not read it right now.</div>'; return; }
+  var pre = String(l.ipaddr).split('/')[0].split('.').slice(0, 3).join('.') + '.';
+  var a = parseInt(l.dhcp_start, 10), b = a + parseInt(l.dhcp_limit, 10) - 1;
+  el.innerHTML = head + '<div class="netgrid">' +
+    '<div><span>Router address</span><b>' + esc(String(l.ipaddr).split('/')[0]) + '</b></div>' +
+    '<div><span>Hands out</span><b>' + (l.dhcp_enabled ? (isNaN(a) || isNaN(b) ? 'yes' : esc(pre + a) + ' – ' + esc(String(b))) : 'Nothing (another router does)') + '</b></div>' +
+    (l.dhcp_enabled && l.dhcp_lease ? '<div><span>Each address kept for</span><b>' + esc(l.dhcp_lease) + '</b></div>' : '') +
+    (l.hostname_alias ? '<div><span>Panel name</span><b>' + esc(l.hostname_alias) + '</b></div>' : '') + '</div>';
 }
 
 function render(list, now) {
@@ -1163,6 +1379,38 @@ function render(list, now) {
   up = all.filter(function (r) { return r.reachable && r.site && r.site.internet; }).length;
   count.style.color = up === all.length ? 'var(--ok)' : (up ? 'var(--warn)' : 'var(--bad)');
   count.innerHTML = '<span class="dot' + (up ? ' live' : '') + '"></span><span style="color:var(--ink)">' + up + ' of ' + all.length + ' online</span>';
+
+  // A place: the content below the place panel is the chosen tab. Shared things (people and devices, the rules)
+  // come from the main router once; a router tab shows only what that router keeps for itself.
+  var sp = selPlace(all);
+  if (sp) {
+    var pmem = placeMembers(all, sp.location_id), pmain = placeMainOf(all, sp.location_id);
+    if (!placeTabValid(placeTab, pmem)) placeTab = 'people';
+    var pr = pmem.filter(function (r) { return placeTab === 'r' + r.id; })[0];
+    var pkey = JSON.stringify(['place', placeTab, pmem.map(function (r) { return [r.id, r.name, r.role, r.reachable]; }),
+      pr ? [pr.site, pr.reachable ? 0 : Math.round((now - (pr.last_seen || 0)) / 60)] : 0]);
+    if (pkey === lastKey) return;
+    var pa = document.activeElement;
+    if (pa && (pa.tagName === 'INPUT' || pa.tagName === 'SELECT') && pa.type !== 'checkbox' && box.contains(pa)) return;
+    lastKey = pkey;
+    var panimate = firstPaint; firstPaint = false;
+    if (placeTab === 'people') {
+      box.innerHTML = '<div class="glass block" data-people="' + sp.location_id + '"></div>';
+      peopleKey = ''; paintPeople(sp.location_id);
+    } else if (placeTab === 'rules') {
+      box.innerHTML = '<div class="banner shared">' + ic('users') + '<div><b>One set of rules for everyone in ' + esc(sp.location || 'this place') + '.</b> ' +
+        'Set them here once; ' + esc(pmain.name) + ' keeps them and every other router follows within about a minute, whichever Wi-Fi or cable a device uses.</div></div>' +
+        '<div class="glass block" data-sites="' + pmain.id + '"></div><div class="glass block" data-pause="' + pmain.id + '"></div>';
+      paintSites(pmain.id); paintPause(pmain.id);
+    } else if (pr) {
+      var openL = {};
+      box.innerHTML = card(pr, now, panimate, true);
+      wire(pr, openL[pr.id]);
+      paintLan(pr.id);
+      bringToLife(box, panimate);
+    }
+    return;
+  }
 
   // Redraw only when something actually changed, so nothing flickers or
   // replays its animation every poll. "last seen" is rounded to the minute.
@@ -1213,7 +1461,7 @@ function bringToLife(box, animate) {
   });
 }
 
-function card(r, now, animate) {
+function card(r, now, animate, inPlace) {
   var s = r.site || {};
   var wans = (s.wans || []).slice().sort(function (x, y) { return (x.priority || 9) - (y.priority || 9); });
   var act = wans.filter(function (w) { return w.active; })[0];
@@ -1287,6 +1535,8 @@ function card(r, now, animate) {
     '</div>';
 
   return '<section class="router' + (animate ? ' enter' : '') + '" data-router="' + r.id + '">' +
+    (inPlace ? '<div class="banner own">' + ic('router') + '<div><b>Only ' + esc(r.name) + '.</b> Its internet line, Wi-Fi name and password, and network address belong to this router alone. ' +
+      'People, devices and the rules are shared: see <b>People &amp; devices</b> and <b>Rules for everyone</b>.</div></div>' : '') +
     '<div class="glass hero ' + cls + '">' +
       '<div class="h-top">' +
         '<div class="r-ico' + (live ? ' live' : '') + '">' + ic('router') + '</div>' +
@@ -1310,27 +1560,35 @@ function card(r, now, animate) {
 
     '<div class="glass lines">' +
       '<div class="sec-h"><h3>' + ic('plug') + 'Internet lines <small>' + wans.length + '</small></h3>' +
+        (wans.length <= 1 ? '' :
         '<div class="seg" role="group" aria-label="How lines are used">' +
           '<button data-mode="failover"' + (s.mwan_mode !== 'balance' ? ' class="on"' : '') + dis + '>' + ic('arrow', 'sm') + 'One at a time</button>' +
           '<button data-mode="balance"' + (s.mwan_mode === 'balance' ? ' class="on"' : '') + dis + '>' + ic('activity', 'sm') + 'Mix all lines</button></div>' +
         (s.mwan_mode === 'balance' ? '' :
         '<label class="auto"><input type="checkbox" data-auto' + (s.auto_slot ? ' checked' : '') + dis + '>' +
-        '<span class="t"></span><span>Fastest line first</span></label>') + '</div>' +
-      '<p class="mix-note">' + (s.forced
+        '<span class="t"></span><span>Fastest line first</span></label>')) + '</div>' +
+      (wans.length <= 1 ? '' : '<p class="mix-note">' + (s.forced
         ? 'Forced: everything goes through ' + esc(s.forced.toUpperCase()) + (typeof s.devices_total === 'number' ? ' (' + s.devices_total + (s.devices_total === 1 ? ' device' : ' devices') + ' in use)' : '') + '. The other lines only step in if it fails, so the router stays online. If the forced line stays down for a minute the router stops forcing by itself. Press Stop forcing to go back.'
         : s.mwan_mode === 'balance'
         ? 'Mixing: every connected line carries traffic at the same time. One download still uses one line, but different apps and devices spread across all of them.'
-        : 'One at a time: the top line carries everything, the next one takes over within seconds if it fails.') + '</p>' +
+        : 'One at a time: the top line carries everything, the next one takes over within seconds if it fails.') + '</p>') +
       (lines || '<div class="line"><div class="l-main" style="color:var(--ink-2)">No lines reported yet.</div></div>') +
     '</div>' +
 
-    '<div class="glass block" data-quality="' + r.id + '"></div>' +
-    '<div class="glass block" data-apps="' + r.id + '"></div>' +
-    '<div class="glass block" data-guests="' + r.id + '"></div>' +
-    '<div class="glass block" data-sites="' + r.id + '"></div>' +
-    '<div class="glass block" data-pause="' + r.id + '"></div>' +
-    '<div class="glass block" data-fw="' + r.id + '"></div>' +
-    '<div class="glass block" data-wifi="' + r.id + '">' + wifiHtml(r.id) + '</div>' +
+    (inPlace
+      // in a place: only what this router keeps for itself (people, devices and rules are on the shared tabs)
+      ? '<div class="glass block" data-wifi="' + r.id + '">' + wifiHtml(r.id) + '</div>' +
+        '<div class="glass block" data-lan="' + r.id + '"></div>' +
+        '<div class="glass block" data-quality="' + r.id + '"></div>' +
+        '<div class="glass block" data-apps="' + r.id + '"></div>' +
+        '<div class="glass block" data-fw="' + r.id + '"></div>'
+      : '<div class="glass block" data-quality="' + r.id + '"></div>' +
+        '<div class="glass block" data-apps="' + r.id + '"></div>' +
+        '<div class="glass block" data-guests="' + r.id + '"></div>' +
+        '<div class="glass block" data-sites="' + r.id + '"></div>' +
+        '<div class="glass block" data-pause="' + r.id + '"></div>' +
+        '<div class="glass block" data-fw="' + r.id + '"></div>' +
+        '<div class="glass block" data-wifi="' + r.id + '">' + wifiHtml(r.id) + '</div>') +
     sshBlock(r) +
     '<div class="glass block" data-compat="' + r.id + '"></div>' +
 
@@ -1697,7 +1955,7 @@ function extras(r) {
   X[id] = X[id] || {};
   call(base + '/apps').then(function (a) { X[id].apps = a; paintApps(id); }).catch(function () {});
   call(base + '/devices').then(function (d) { X[id].rates = d.devices || []; paintApps(id); }).catch(function () {});
-  call(base + '/guests').then(function (g) { X[id].guests = g; paintGuests(id); }).catch(function () {});
+  call(base + '/guests').then(function (g) { X[id].guests = g; paintGuests(id); paintPeopleHere(); }).catch(function () {});
   call(base + '/sites').then(function (b) { X[id].sites = b; paintSites(id); }).catch(function () {});
   call(base + '/pause').then(function (p) { X[id].pause = p; paintPause(id); }).catch(function () {});
   if (!fwTimer[id]) call(base + '/software').then(function (f) { X[id].fw = f; paintFw(id); if (f.state === 'running') watchFw(id); }).catch(function () {});
@@ -1974,7 +2232,7 @@ function paintApps(id) {
   var key = JSON.stringify([a, rates.map(function (d) { return [d.mac, d.down_mbps, d.up_mbps]; }), st.offline]);
   if (key === st.aKey && el.firstChild) return;
   st.aKey = key;
-  var head = '<div class="sec-h"><h3>' + ic('devices') + 'Devices and apps' + (a && a.devices ? ' <small>' + a.devices.length + '</small>' : '') + '</h3></div>';
+  var head = '<div class="sec-h"><h3>' + ic('devices') + 'Data use by device' + (a && a.devices ? ' <small>' + a.devices.length + '</small>' : '') + '</h3></div>';
   function wireHead() {}
   head += '<p class="sec-sub">Who is connected over Wi-Fi or cable, how much data each one has used, and what it was mostly spent on. Open a device to see every site it has used.</p>';
   var allK = sitesKey(id, '');
