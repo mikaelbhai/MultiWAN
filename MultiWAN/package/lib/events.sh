@@ -57,7 +57,7 @@ ev_devices_json() {
                 iwinfo "$i" assoclist 2>/dev/null | awk 'toupper($1) ~ /^([0-9A-F][0-9A-F]:){5}[0-9A-F][0-9A-F]$/ { print tolower($1) }'
             done | tr '\n' ' ')
     { echo "@wifi $wifi"; echo "@guests"; cat /etc/mwadmin/guests 2>/dev/null
-      echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null; echo "@arp"; cat /proc/net/arp 2>/dev/null; } | awk '
+      echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null; echo "@arp"; cat /proc/net/arp 2>/dev/null; } | awk -v tsv="$MW_RUN/devices.now.new" '
         function clean(s) { gsub(/\\/, "", s); gsub(/"/, "", s); gsub(/[\001-\037]/, "", s); return s }
         /^@wifi/ { n = split($0, a, " "); for (i = 2; i <= n; i++) w[a[i]] = 1; next }
         /^@/ { sec = $1; next }
@@ -69,6 +69,7 @@ ev_devices_json() {
             f = 1
             for (m in on) {
                 printf "%s[\"%s\",\"%s\",\"%s\",\"%s\",%d]", (f ? "" : ","), clean(m), clean(ip[m]), clean(h[m]), clean(gn[m]), ((m in w) ? 1 : 0)
+                if (tsv != "") printf "%s\t%s\t%s\t%s\t%d\n", clean(m), clean(ip[m]), clean(h[m]), clean(gn[m]), ((m in w) ? 1 : 0) > tsv
                 f = 0
             }
             printf "]"
@@ -102,7 +103,9 @@ ev_push() {
             for (i=1;i<=NF;i++) { gsub(/\\/,"",$i); gsub(/"/,"",$i); gsub(/[\001-\037]/,"",$i) }
             printf "%s[\"%s\",%d,\"%s\",\"%s\",\"%s\",\"%s\",%d]", (NR>1?",":""), $1, $2, $3, $4, $5, $6, $7 }' "$act"
         printf '],"devices":'
+        rm -f "$MW_RUN/devices.now.new"; : > "$MW_RUN/devices.now.new"
         ev_devices_json
+        mv "$MW_RUN/devices.now.new" "$MW_RUN/devices.now" 2>/dev/null
         printf '}'
     } > "$body"
     local n_ev; n_ev=$(tail -n +"$((sent + 1))" "$EV_LOG" | head -n 500 | wc -l)
@@ -156,13 +159,14 @@ ev_prune() {
     [ "$(cat /tmp/mwadmin-pruned 2>/dev/null)" = "$today" ] && return 0
     sent=$(cat "$EV_SENT" 2>/dev/null || echo 0)
     valid_int "$sent" || return 0
-    # local midnight (router clock is Asia/Karachi)
-    mid=$(( $(date +%s) - $(date '+%H %M %S' | awk '{ print $1 * 3600 + $2 * 60 + $3 }') ))
+    # local midnight (router clock is Asia/Karachi), two days back: the router keeps today and the 2 days before
+    # (3 days), long enough for the hourly backup (archive.sh) to have put them on the USB drive or the website
+    mid=$(( $(date +%s) - $(date '+%H %M %S' | awk '{ print $1 * 3600 + $2 * 60 + $3 }') - 2 * 86400 ))
     drop=$(awk -F'|' -v n="$sent" -v m="$mid" 'NR <= n && $1 < m { c++ } END { print c + 0 }' "$EV_LOG" 2>/dev/null)
     if [ "${drop:-0}" -gt 0 ]; then
         awk -F'|' -v n="$sent" -v m="$mid" '!(NR <= n && $1 < m)' "$EV_LOG" > "$EV_LOG.tmp" &&
             mv "$EV_LOG.tmp" "$EV_LOG" && echo $((sent - drop)) > "$EV_SENT"
-        log "event log: removed $drop uploaded entries from before today"
+        log "event log: removed $drop uploaded entries older than 3 days"
     fi
     echo "$today" > /tmp/mwadmin-pruned
 }
@@ -227,6 +231,9 @@ ev_watch() {
             sh /usr/lib/mwadmin/nodewatch.sh tick >/dev/null 2>&1
             # settings shared between the routers of one location (Router 1 sends, Router 2 follows)
             sh /usr/lib/mwadmin/policy.sh tick >/dev/null 2>&1
+            # devices seen today (RAM), and once an hour the daily backup to the USB drive (or the website)
+            sh /usr/lib/mwadmin/archive.sh seen >/dev/null 2>&1
+            [ $((n % 60)) -eq 5 ] && sh /usr/lib/mwadmin/archive.sh tick >/dev/null 2>&1
             # shared USB drives follow devices whose address changed (every 3 min)
             [ $((n % 3)) -eq 1 ] && [ -s /etc/mwadmin/drives ] && sh /usr/lib/mwadmin/drive.sh apply >/dev/null 2>&1
             n=$((n + 1))

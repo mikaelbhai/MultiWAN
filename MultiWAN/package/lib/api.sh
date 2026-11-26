@@ -2813,7 +2813,9 @@ api_dispatch() {
         /site/force:POST)         api_site_force ;;
         /capabilities:GET)        api_capabilities ;;
         /connect:GET)             api_connect_get ;;
-        /policy:GET)              printf '{"ok":true,"policy":%s}\n' "$(sh /usr/lib/mwadmin/policy.sh status)" ;;
+        /policy:GET)              printf '{"ok":true,"policy":%s,"archive":%s}\n' "$(sh /usr/lib/mwadmin/policy.sh status)" "$(sh /usr/lib/mwadmin/archive.sh status)" ;;
+        /archive/run:POST)        sh /usr/lib/mwadmin/archive.sh tick >/dev/null 2>&1
+                                  printf '{"ok":true,"archive":%s}\n' "$(sh /usr/lib/mwadmin/archive.sh status)" ;;
         /policy/sync:POST)        rm -f /tmp/mwadmin/policy.last /tmp/mwadmin/locks/plsync.lock 2>/dev/null; sh /usr/lib/mwadmin/policy.sh tick >/dev/null 2>&1
                                   printf '{"ok":true,"policy":%s}\n' "$(sh /usr/lib/mwadmin/policy.sh status)" ;;
         /connect:POST)            api_connect_post ;;

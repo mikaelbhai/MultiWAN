@@ -19,7 +19,7 @@ $tok = (string) ($_SERVER['HTTP_X_ROUTER_TOKEN'] ?? '');
 if (!preg_match('/^[a-f0-9]{48,128}$/', $tok)) fail(401, 'Bad token.');
 
 $pdo = db();
-$st = $pdo->prepare('SELECT id, location_id, role FROM routers WHERE token = ?');
+$st = $pdo->prepare('SELECT id, location_id, role, name FROM routers WHERE token = ?');
 $st->execute([$tok]);
 $r = one($st);
 if (!$r) { usleep(300000); fail(401, 'Unknown router.'); }
@@ -44,11 +44,22 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method === 'POST') {
     $kind = (string) ($_GET['kind'] ?? '');
     $ver = (string) ($_GET['version'] ?? '');
+    if ($kind === 'archive_ack') {
+        // the main router has a day on its USB drive: the copy waiting here can go (its own, or a router of its location)
+        $day = (string) ($_GET['day'] ?? ''); $of = (int) ($_GET['router'] ?? 0);
+        if (!preg_match('/^20\d{6}$/', $day)) fail(400, 'Bad day.');
+        $ok = $of === $rid;
+        if (!$ok && $role === 'main') { $q = $pdo->prepare('SELECT 1 FROM routers WHERE id = ? AND location_id = ?'); $q->execute([$of, $loc]); $ok = (bool) one($q); }
+        if (!$ok) fail(403, 'Not a router of this location.');
+        db_retry(function () use ($pdo, $of, $day) { $pdo->prepare('DELETE FROM archives WHERE router_id = ? AND day = ?')->execute([$of, $day]); });
+        json_out(200, ['ok' => true, 'deleted' => true]);
+    }
     if (!preg_match('/^[a-f0-9]{32}$/', $ver)) fail(400, 'Bad version.');
     $body = file_get_contents('php://input', false, null, 0, POLICY_MAX + 1);
     if ($body === false || strlen($body) > POLICY_MAX) fail(413, 'Too large.');
     if (md5($body) !== $ver) fail(400, 'The checksum does not match.');
-    $want = $kind === 'policy' ? "# baytaar-policy 2\n" : "# baytaar-report 1\n";
+    $want = $kind === 'policy' ? "# baytaar-policy 2\n" : ($kind === 'archive' ? '# baytaar-archive 1 ' : "# baytaar-report 1\n");
+    if ($kind === 'archive_ack') $want = '';
     if (strncmp($body, $want, strlen($want)) !== 0 || substr($body, -5) !== "@end\n") fail(400, 'Not a bundle this website understands.');
 
     if ($kind === 'policy' && $role === 'main') {
@@ -57,6 +68,18 @@ if ($method === 'POST') {
                            ON CONFLICT(location_id) DO UPDATE SET version = excluded.version, body = excluded.body,
                            updated = excluded.updated, from_router = excluded.from_router')
                 ->execute([$loc, $ver, $body, time(), $rid]);
+        });
+        json_out(200, ['ok' => true, 'role' => $role, 'stored' => true]);
+    }
+    if ($kind === 'archive') {
+        // a day of this router's devices, lists and logs, kept until the main router has it on its USB drive
+        $day = (string) ($_GET['day'] ?? '');
+        if (!preg_match('/^20\d{6}$/', $day) || strpos($body, '# baytaar-archive 1 ' . $day . "\n") !== 0) fail(400, 'Bad day.');
+        db_retry(function () use ($pdo, $rid, $day, $ver, $body) {
+            $pdo->prepare('INSERT INTO archives (router_id, day, version, body, updated) VALUES (?, ?, ?, ?, ?)
+                           ON CONFLICT(router_id, day) DO UPDATE SET version = excluded.version, body = excluded.body, updated = excluded.updated')
+                ->execute([$rid, $day, $ver, $body, time()]);
+            $pdo->prepare('DELETE FROM archives WHERE updated < ?')->execute([time() - 60 * 86400]);    // nothing waits here for ever
         });
         json_out(200, ['ok' => true, 'role' => $role, 'stored' => true]);
     }
@@ -86,7 +109,33 @@ if ($what === 'reports' && $role === 'main') {
 }
 if ($what !== '') fail(404, 'Nothing for this router.');
 
-$out = ['ok' => true, 'role' => $role];
+// backups waiting for the main router's USB drive: its own and those of its location's other routers
+function archive_routers(PDO $pdo, int $rid, int $loc): array {
+    if (!$loc) return [$rid];
+    $q = $pdo->prepare('SELECT id FROM routers WHERE location_id = ?'); $q->execute([$loc]);
+    return array_map('intval', $q->fetchAll(PDO::FETCH_COLUMN));
+}
+if (isset($_GET['archives'])) {
+    if ($role !== 'main') json_out(200, ['ok' => true, 'archives' => []]);
+    $ids = archive_routers($pdo, $rid, $loc);
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $q = $pdo->prepare("SELECT a.router_id, r.name AS router, a.day, a.version FROM archives a JOIN routers r ON r.id = a.router_id
+                        WHERE a.router_id IN ($in) ORDER BY a.day, a.router_id LIMIT 100");
+    $q->execute($ids);
+    $list = array_map(function ($x) { return ['router_id' => (int) $x['router_id'], 'router' => $x['router'], 'day' => $x['day'], 'version' => $x['version']]; }, $q->fetchAll());
+    json_out(200, ['ok' => true, 'archives' => $list]);
+}
+if (isset($_GET['archive'])) {
+    $of = (int) $_GET['archive']; $day = (string) ($_GET['day'] ?? '');
+    if ($role !== 'main' || !in_array($of, archive_routers($pdo, $rid, $loc), true)) fail(403, 'Not a router of this location.');
+    $q = $pdo->prepare('SELECT body FROM archives WHERE router_id = ? AND day = ?'); $q->execute([$of, $day]);
+    $row = one($q);
+    if (!$row) fail(404, 'No such day.');
+    header('Content-Type: text/plain; charset=utf-8'); header('Cache-Control: no-store'); header('X-Content-Type-Options: nosniff');
+    echo $row['body']; exit;
+}
+
+$out = ['ok' => true, 'role' => $role, 'name' => $r['name']];
 if ($role !== 'none') {
     $q = $pdo->prepare('SELECT version, updated FROM policy WHERE location_id = ?'); $q->execute([$loc]);
     $p = one($q);

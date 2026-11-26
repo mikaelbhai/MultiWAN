@@ -39,6 +39,7 @@ function web_features(): array {
         'quality'         => ['Line quality test',                     1, ['/quality']],
         'connect'         => ['Connect to a website',                  1, ['/connect']],
         'shared_settings' => ['Settings shared between routers',       1, ['/policy', '/policy/sync']],
+        'backup'          => ['Daily backup to the USB drive',         1, ['/archive/run']],
         'software'        => ['Software update',                       1, ['/software']],
     ];
 }

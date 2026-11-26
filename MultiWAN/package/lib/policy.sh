@@ -270,6 +270,7 @@ pl_tick() {
     if ! pl_ok "$code"; then pl_set last_error "the website answered ${code:-nothing} to the check"; rm -f "$PL_TMP/resp"; lock_release plsync; return 0; fi
     role=$(pl_json role); ver=$(pl_json version); newer=$(pl_json newer); rver=$(pl_json reports_version); rnewer=$(pl_json reports_newer)
     pl_set role "${role:-none}"; pl_set checked_at "$now"
+    local wname; wname=$(pl_json name); [ -n "$wname" ] && pl_set name "$wname"      # the name used on the website (backup folders)
 
     case "$role" in
         main)

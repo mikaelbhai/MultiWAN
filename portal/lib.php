@@ -49,6 +49,11 @@ function db(): PDO {
     $pdo->exec('CREATE TABLE IF NOT EXISTS policy (
         location_id INTEGER PRIMARY KEY REFERENCES locations(id) ON DELETE CASCADE,
         version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL, from_router INTEGER)');
+    // Daily backups waiting for the main router's USB drive (a router without a drive, or a main router whose drive is
+    // missing, leaves its days here; the main router writes them to the drive and then they are deleted).
+    $pdo->exec('CREATE TABLE IF NOT EXISTS archives (
+        router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE, day TEXT NOT NULL,
+        version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (router_id, day))');
     // Devices connected to each router right now (replaced on every upload that carries a list).
     $pdo->exec('CREATE TABLE IF NOT EXISTS devices_now (
         router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE, mac TEXT NOT NULL, ip TEXT, host TEXT, name TEXT,
