@@ -193,6 +193,19 @@ apply_router2_mode() {
     if uci -q get network.lan_admin >/dev/null; then
         uci set network.lan_admin.ipaddr="${lan_ip%.*}.254"
     fi
+    # the block-page address, the name that points at it, and the panel's host name must follow the new network
+    # (found on the first real switch: they stayed on the old 192.168.1.x, unreachable from the new LAN)
+    if uci -q get network.lan_block >/dev/null; then
+        uci set network.lan_block.ipaddr="${lan_ip%.*}.253"
+        local a
+        for a in $(uci -q get dhcp.@dnsmasq[0].address); do
+            case "$a" in /sites.router/*) uci -q del_list dhcp.@dnsmasq[0].address="$a" ;; esac
+        done
+        uci add_list dhcp.@dnsmasq[0].address="/sites.router/${lan_ip%.*}.253"
+    fi
+    if uci -q get dhcp.mwadmin_alias.ip >/dev/null; then
+        uci set dhcp.mwadmin_alias.ip="${lan_ip%.*}.254"
+    fi
 
     # DHCP server stays ON for the LAN (the default); make sure it is not switched off
     uci -q delete dhcp.lan.ignore
