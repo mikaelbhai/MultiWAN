@@ -315,6 +315,61 @@ main { max-width: 1120px; margin: 0 auto; padding: 30px 20px 64px; }
 #pick i { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; }
 #pick i.up { background: var(--ok); box-shadow: 0 0 0 4px rgba(22,163,74,.18); }
 #pick button.on i { box-shadow: 0 0 0 3px rgba(255,255,255,.35); }
+/* routers of one place: one joined group, so it reads as one connection, not separate networks */
+#pick .pgroup { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px 10px; border-radius: 18px; background: rgba(255,255,255,.45); border: 1px solid var(--line); }
+#pick .pg-h { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 0 4px; }
+#pick .pg-row { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+#pick .pg-row button { border-radius: 0; }
+#pick .pg-row button:first-child { border-radius: 14px 0 0 14px; }
+#pick .pg-row button:last-child { border-radius: 0 14px 14px 0; }
+#pick .pg-row button:only-child { border-radius: 14px; }
+#pick .pg-row button + button { border-left: 0; }
+/* the place panel */
+#place:empty { display: none; }
+.place { padding: 20px 22px; margin: 0 0 18px; }
+.pl-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pl-head h2 { margin: 0; font: 700 20px var(--display); letter-spacing: -.02em; }
+.pl-head p { margin: 2px 0 0; color: var(--ink-2); font-size: 13.5px; }
+.pl-chain { display: flex; align-items: stretch; gap: 0; margin: 18px 0 6px; overflow-x: auto; padding-bottom: 4px; }
+.pl-node { flex: 1 1 0; min-width: 150px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--r-md); padding: 13px 14px; display: flex; gap: 10px; align-items: flex-start; }
+.pl-node .ni { width: 38px; height: 38px; border-radius: 12px; background: #fff; border: 1px solid var(--line-2); display: grid; place-items: center; color: var(--ink-2); flex: none; }
+.pl-node.main .ni { color: var(--a1); border-color: rgba(37,99,235,.35); }
+.pl-node b { display: block; font: 700 14px var(--display); }
+.pl-node span { display: block; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+.pl-link { flex: 0 0 34px; display: grid; place-items: center; color: var(--ink-3); }
+.pl-link.off { color: var(--bad); }
+.pl-sec { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.pl-sec > .pl-st { display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px; }
+.pl-sec > .pl-st .grow { flex: 1; }
+.pl-dev { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-top: 1px solid var(--line); font-size: 13.5px; }
+.pl-dev:first-of-type { border-top: 0; }
+.pl-dev .dn { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-dev .dm { color: var(--ink-3); font-size: 12.5px; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; background: var(--inset); color: var(--ink-2); white-space: nowrap; }
+.chip.main { background: var(--accent-soft); color: var(--a1); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.pl-r { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.pl-r:first-of-type { border-top: 0; }
+.pl-r .rn { flex: 1; min-width: 140px; }
+.pl-r .rn b { font: 700 14px var(--display); }
+.pl-r .rn span { display: block; font-size: 12px; color: var(--ink-3); }
+.pl-add { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.pl-add select, .pl-add input { flex: 1; min-width: 160px; box-sizing: border-box; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line-2); background: rgba(255,255,255,.75); font: inherit; font-size: 14px; }
+@media (max-width: 640px) {
+  .place { padding: 16px; }
+  .pl-chain { flex-direction: column; overflow: visible; }
+  .pl-link { flex-basis: 22px; transform: rotate(90deg); }
+  .pl-head .f-ico { display: none; }
+  .pl-head > div { flex-basis: 100%; }
+  #pick .pgroup { width: 100%; box-sizing: border-box; }
+  #pick .pg-row { flex-direction: column; align-items: stretch; }
+  #pick .pg-row button, #pick .pg-row button:first-child, #pick .pg-row button:last-child { border-radius: 0; }
+  #pick .pg-row button:first-child { border-radius: 14px 14px 0 0; }
+  #pick .pg-row button:last-child { border-radius: 0 0 14px 14px; }
+  #pick .pg-row button:only-child { border-radius: 14px; }
+  #pick .pg-row button + button { border-left: 1px solid var(--line); border-top: 0; }
+}
 .fw-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding: 4px 22px 20px; }
 .fw-row .fw-v { font-size: 13px; color: var(--ink-3); }
 .fw-row .fw-v b { display: block; font: 600 15px var(--mono); color: var(--ink); margin-top: 2px; }
@@ -592,6 +647,7 @@ code.wpw { font: 600 13px var(--mono); color: var(--ink); background: var(--inse
     </div>
     <div id="appbox"></div>
     <div id="pick"></div>
+    <div id="place"></div>
     <div id="routers"><div class="skel"></div></div>
     <div class="foot"><a href="BaytaarRouter.apk">
       <svg class="i sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
@@ -913,12 +969,21 @@ function pickRouter(list) {
   if (list.length < 2) { pick.innerHTML = ''; selId = list.length ? list[0].id : null; return; }
   if (selId === null) { try { selId = parseInt(localStorage.getItem('bt-router'), 10); } catch (e) {} }
   if (!list.some(function (r) { return r.id === selId; })) selId = list[0].id;
-  var html = list.map(function (r) {
+  function btn(r, sub) {
     var s = r.site || {}, up = r.reachable && s.internet;
     return '<button data-pick="' + r.id + '"' + (r.id === selId ? ' class="on"' : '') + '><i' + (up ? ' class="up"' : '') + '></i>' +
-      '<span><b>' + esc(r.name) + '</b><small>' + (r.role ? esc(r.location || 'Location') + ' · ' + (r.role === 'main' ? 'main router' : 'follows main') + ' · ' : '') +
-        esc(s.location || (r.reachable ? 'No place set' : 'Offline')) + '</small></span></button>';
-  }).join('');
+      '<span><b>' + esc(r.name) + '</b><small>' + esc(sub) + '</small></span></button>';
+  }
+  // routers of one place are drawn as ONE joined group (main router first): one connection, not separate networks
+  var done = {}, html = '';
+  list.forEach(function (r) {
+    if (done[r.id]) return;
+    if (!r.location_id) { done[r.id] = 1; html += btn(r, (r.site && r.site.location) || (r.reachable ? 'No place set' : 'Offline')); return; }
+    var mem = placeMembers(list, r.location_id);
+    mem.forEach(function (m) { done[m.id] = 1; });
+    html += '<div class="pgroup"><div class="pg-h">' + ic('building', 'sm') + esc(r.location || 'Place') + ' · one connection</div><div class="pg-row">' +
+      mem.map(function (m) { return btn(m, m.role === 'main' ? 'Main router' : (m.reachable ? 'Follows the main router' : 'Offline')); }).join('') + '</div></div>';
+  });
   if (pick.getAttribute('data-k') !== html) { pick.innerHTML = html; pick.setAttribute('data-k', html); }
   $$('[data-pick]', pick).forEach(function (b) {
     b.onclick = function () {
@@ -930,17 +995,168 @@ function pickRouter(list) {
   });
 }
 
+/* ---- A place: the routers of one location shown as ONE connection -------------------------------------
+   The main router (Router 1) decides; the routers that follow it enforce the same rules and report back.
+   Behind the scenes nothing changes; this is how it looks to the person using it. */
+function placeMembers(list, lid) {
+  return list.filter(function (x) { return x.location_id === lid; })
+    .sort(function (a, b) { return ((a.role === 'main') ? 0 : 1) - ((b.role === 'main') ? 0 : 1) || a.id - b.id; });
+}
+function routerUp(r) { return !!(r.reachable && r.site && r.site.internet); }
+var placeKey = '', placeDevs = { at: 0, lid: null, sig: '', list: [] };
+
+function placeSave(name, mainId, branchIds, msg) {
+  return call('portal.php/location-save', 'POST', { name: name, main: mainId, branch: branchIds })
+    .then(function () { toast(msg || 'Saved.'); placeKey = ''; lastKey = null; load(); })
+    .catch(function (e) { toast(e.message, true); });
+}
+
+function loadPlaceDevs(r) {
+  if (placeDevs.lid === r.location_id && Date.now() - placeDevs.at < 30000) return;
+  placeDevs.at = Date.now(); placeDevs.lid = r.location_id;
+  call('portal.php/connected?r=' + r.id).then(function (j) {
+    var sig = JSON.stringify(j.devices.map(function (d) { return [d.router_id, d.mac, d.name, d.ip, d.wifi]; }));
+    if (sig === placeDevs.sig) return;
+    placeDevs.sig = sig; placeDevs.list = j.devices;
+    placeKey = ''; renderPlace(lastList || []);
+  }).catch(function () {});
+}
+
+function renderPlace(all) {
+  var box = $('#place');
+  var sel = all.filter(function (r) { return r.id === selId; })[0] || all[0];
+  var act = document.activeElement;
+  if (act && box.contains(act) && (act.tagName === 'SELECT' || act.tagName === 'INPUT')) return;      // never redraw under the cursor
+
+  // Not in a place yet: offer to put routers together (only when there is more than one)
+  if (!sel || !sel.location_id) {
+    var loose = all.filter(function (r) { return !r.location_id; });
+    if (!sel || loose.length < 2) { if (placeKey !== 'none') { box.innerHTML = ''; placeKey = 'none'; } return; }
+    var k0 = 'make:' + JSON.stringify(loose.map(function (r) { return [r.id, r.name]; }));
+    if (k0 === placeKey) return;
+    placeKey = k0;
+    box.innerHTML = '<div class="glass place"><div class="pl-head"><div class="f-ico">' + ic('building') + '</div><div><h2>Put your routers together</h2>' +
+      '<p>Routers in one place share one set of rules and show their devices together. The main router makes the decisions; the others follow it.</p></div></div>' +
+      '<div class="pl-add" style="margin-top:14px"><input type="text" maxlength="60" data-mk-name placeholder="Name the place, e.g. Home">' +
+      '<select data-mk-main>' + loose.map(function (r) { return '<option value="' + r.id + '">Main router: ' + esc(r.name) + '</option>'; }).join('') + '</select>' +
+      '<button class="btn primary sm" data-mk-go>' + ic('check', 'sm') + 'Put them together</button></div>' +
+      '<p class="mix-note" style="margin:8px 0 0">All the other routers listed above join it and follow the main router. You can take any of them out again.</p></div>';
+    box.querySelector('[data-mk-go]').onclick = function () {
+      var nm = box.querySelector('[data-mk-name]').value.trim(), main = parseInt(box.querySelector('[data-mk-main]').value, 10);
+      if (!nm) { toast('Name the place first.', true); return; }
+      placeSave(nm, main, loose.map(function (r) { return r.id; }).filter(function (id) { return id !== main; }), 'Your routers are together now.');
+    };
+    return;
+  }
+
+  var lid = sel.location_id, name = sel.location || 'Place';
+  var mem = placeMembers(all, lid), main = mem.filter(function (r) { return r.role === 'main'; })[0] || mem[0];
+  var others = all.filter(function (r) { return r.location_id !== lid; });
+  var devs = placeDevs.lid === lid ? placeDevs.list : [];
+  var k = JSON.stringify([lid, name, mem.map(function (r) { return [r.id, r.name, r.role, routerUp(r), r.reachable]; }), others.map(function (r) { return [r.id, r.name]; }), placeDevs.lid === lid ? placeDevs.sig : '']);
+  loadPlaceDevs(sel);
+  if (k === placeKey) return;
+  placeKey = k;
+
+  var per = {}; devs.forEach(function (d) { per[d.router_id] = (per[d.router_id] || 0) + 1; });
+  var ms = main.site || {}, allUp = mem.every(routerUp), anyUp = mem.some(routerUp);
+  var down = mem.filter(function (r) { return !routerUp(r); }).map(function (r) { return r.name; });
+
+  // Internet -> main router -> each following router
+  var chain = '<div class="pl-node"><div class="ni">' + ic('globe') + '</div><div><b>Internet</b><span>' +
+      esc(ms.active_isp || (routerUp(main) ? 'Connected' : 'No line up')) + (ms.public_ip ? ' · ' + esc(ms.public_ip) : '') + '</span></div></div>';
+  mem.forEach(function (r) {
+    chain += '<div class="pl-link' + (routerUp(r) ? '' : ' off') + '">' + ic('arrow') + '</div>' +
+      '<div class="pl-node' + (r.role === 'main' ? ' main' : '') + '"><div class="ni">' + ic('router') + '</div><div><b>' + esc(r.name) + '</b><span>' +
+      (r.role === 'main' ? 'Main router · decides' : 'Follows ' + esc(main.name)) + '</span><span>' +
+      (routerUp(r) ? (per[r.id] || 0) + ' device' + ((per[r.id] || 0) === 1 ? '' : 's') : (r.reachable ? 'No internet' : 'Offline')) + '</span></div></div>';
+  });
+
+  var devHtml = devs.length ? devs.map(function (d) {
+    return '<div class="pl-dev">' + ic(d.wifi ? 'wifi' : 'cable', 'sm') + '<span class="dn">' + esc(d.name || d.host || 'Unnamed device') + '</span>' +
+      '<span class="dm">' + esc(d.ip || '') + '</span><span class="chip' + (d.role === 'main' ? ' main' : '') + '">' + esc(d.router) + '</span></div>';
+  }).join('') : '<p class="mix-note" style="margin:4px 0">' + (placeDevs.lid === lid ? 'No devices reported yet. Each router sends its list about once a minute.' : 'Loading…') + '</p>';
+
+  var rows = mem.map(function (r) {
+    return '<div class="pl-r"><span class="dot' + (routerUp(r) ? ' live' : '') + '" style="color:' + (routerUp(r) ? 'var(--ok)' : 'var(--bad)') + '"></span>' +
+      '<div class="rn"><b>' + esc(r.name) + '</b><span>' + (r.role === 'main' ? 'Main router: holds the rules and makes the decisions' : 'Follows ' + esc(main.name) + ': same rules, reports what it sees') + '</span></div>' +
+      '<span class="chip' + (r.role === 'main' ? ' main' : '') + '">' + (r.role === 'main' ? 'Main' : 'Follows') + '</span>' +
+      (r.role !== 'main' ? '<button class="btn sm" data-pl-main="' + r.id + '">Make main</button>' : '') +
+      '<button class="btn ghost sm" data-pl-out="' + r.id + '" title="Take it out of ' + esc(name) + '">' + ic('x', 'sm') + 'Remove</button></div>';
+  }).join('');
+
+  box.innerHTML = '<div class="glass place">' +
+    '<div class="pl-head"><div class="f-ico">' + ic('building') + '</div><div style="flex:1;min-width:0"><h2 data-pl-name>' + esc(name) + '</h2>' +
+      '<p>' + mem.length + ' router' + (mem.length === 1 ? '' : 's') + ' · one internet connection · ' + devs.length + ' device' + (devs.length === 1 ? '' : 's') + ' connected</p></div>' +
+      '<span class="pill ' + (allUp ? 'on' : (anyUp ? 'mid' : 'off')) + '">' + (allUp ? 'All online' : (anyUp ? esc(down.join(', ')) + ' offline' : 'Offline')) + '</span>' +
+      '<button class="icon-btn" data-pl-rename title="Rename this place">' + ic('pencil', 'sm') + '</button></div>' +
+    '<div class="pl-chain">' + chain + '</div>' +
+    '<div class="pl-sec"><div class="pl-st">' + ic('devices', 'sm') + 'Devices in ' + esc(name) + '<span class="grow"></span>' + devs.length + '</div>' + devHtml + '</div>' +
+    '<div class="pl-sec"><div class="pl-st">' + ic('router', 'sm') + 'Routers in ' + esc(name) + '</div>' + rows +
+      '<div class="pl-add">' + (others.length ? '<select data-pl-pick>' + others.map(function (r) { return '<option value="' + r.id + '">' + esc(r.name) + (r.location ? ' (now in ' + esc(r.location) + ')' : '') + '</option>'; }).join('') + '</select>' +
+        '<button class="btn sm" data-pl-add>' + ic('arrow', 'sm') + 'Add to ' + esc(name) + '</button>' : '') +
+        '<button class="btn primary sm" data-pl-new>' + ic('router', 'sm') + 'Connect a new router</button></div></div>' +
+    '</div>';
+
+  var branchOf = function (exceptId, extra) { return mem.filter(function (r) { return r.id !== exceptId && r.id !== main.id; }).map(function (r) { return r.id; }).concat(extra || []); };
+  $$('[data-pl-main]', box).forEach(function (b) {
+    b.onclick = function () {
+      var id = parseInt(b.getAttribute('data-pl-main'), 10);
+      var r = mem.filter(function (x) { return x.id === id; })[0];
+      askConfirm({ title: 'Make ' + r.name + ' the main router?', html: 'It will hold the rules and make the decisions for ' + esc(name) + '. ' + esc(main.name) + ' will follow it.', ok: 'Make main' }).then(function (yes) {
+        if (!yes) return;
+        placeSave(name, id, mem.filter(function (x) { return x.id !== id; }).map(function (x) { return x.id; }), r.name + ' is the main router now.');
+      });
+    };
+  });
+  $$('[data-pl-out]', box).forEach(function (b) {
+    b.onclick = function () {
+      var id = parseInt(b.getAttribute('data-pl-out'), 10);
+      var r = mem.filter(function (x) { return x.id === id; })[0];
+      var rest = mem.filter(function (x) { return x.id !== id; });
+      askConfirm({ title: 'Remove ' + r.name + ' from ' + name + '?', html: 'It keeps working and stays on your account, but it no longer follows the shared rules or shows its devices here.' +
+        (r.role === 'main' && rest.length ? ' ' + esc(rest[0].name) + ' becomes the main router.' : ''), ok: 'Remove' }).then(function (yes) {
+        if (!yes) return;
+        if (!rest.length) { call('portal.php/location-leave', 'POST', { id: id }).then(function () { toast('Removed.'); placeKey = ''; lastKey = null; load(); }).catch(function (e) { toast(e.message, true); }); return; }
+        var newMain = r.role === 'main' ? rest[0].id : main.id;
+        placeSave(name, newMain, rest.filter(function (x) { return x.id !== newMain; }).map(function (x) { return x.id; }), r.name + ' was removed from ' + name + '.');
+      });
+    };
+  });
+  var addB = box.querySelector('[data-pl-add]');
+  if (addB) addB.onclick = function () {
+    var id = parseInt(box.querySelector('[data-pl-pick]').value, 10);
+    var r = others.filter(function (x) { return x.id === id; })[0];
+    placeSave(name, main.id, branchOf(-1, [id]), r.name + ' joined ' + name + ' and follows ' + main.name + '.');
+  };
+  box.querySelector('[data-pl-new]').onclick = addRouterDialog;
+  box.querySelector('[data-pl-rename]').onclick = function () {
+    var h = box.querySelector('[data-pl-name]');
+    h.outerHTML = '<div class="pl-add" style="margin:0"><input type="text" maxlength="60" data-pl-nm value="' + esc(name) + '"><button class="btn primary sm" data-pl-nmsave>Save</button></div>';
+    var inp = box.querySelector('[data-pl-nm]'); inp.focus(); inp.select();
+    var save = function () { var v = inp.value.trim(); if (v && v !== name) placeSave(v, main.id, branchOf(-1), 'Renamed.'); else { placeKey = ''; renderPlace(lastList || []); } };
+    box.querySelector('[data-pl-nmsave]').onclick = save;
+    inp.onkeydown = function (e) { if (e.key === 'Enter') save(); if (e.key === 'Escape') { inp.blur(); placeKey = ''; renderPlace(lastList || []); } };
+  };
+}
+
 function render(list, now) {
   var box = $('#routers'), count = $('#count');
   if (!list.length) {
     $('#summary').textContent = 'No routers connected yet.';
     count.hidden = true;
+    $('#place').innerHTML = ''; placeKey = '';
     box.innerHTML = '<div class="glass empty">' + ic('inbox') + '<div>No router is connected to this account yet.<br>Press <b>Add a router</b> to get your key, then enter it on your router.</div></div>';
     return;
   }
   var up = list.filter(function (r) { return r.reachable && r.site && r.site.internet; }).length;
-  $('#summary').textContent = list.length === 1 ? 'Live view of your router, updated every few seconds.' : 'You have ' + list.length + ' routers. Pick the one you want to see or set up.';
+  var places = {}; list.forEach(function (r) { if (r.location_id) places[r.location_id] = 1; });
+  var np = Object.keys(places).length;
+  $('#summary').textContent = list.length === 1 ? 'Live view of your router, updated every few seconds.' :
+    (np ? (np === 1 ? 'One place' : np + ' places') + ', ' + list.length + ' routers. Routers in a place share one connection and one set of rules.' :
+          'You have ' + list.length + ' routers. Pick the one you want to see or set up.');
   pickRouter(list);
+  renderPlace(list);
   var all = list;
   if (list.length > 1) list = list.filter(function (r) { return r.id === selId; });
   count.hidden = false;
@@ -1277,56 +1493,28 @@ function paintCompat(r) {
           '<span class="tag ' + s[1] + '" style="flex:none">' + esc(s[0]) + '</span><span><b>' + esc(f.label) + '</b>' + (f.message ? '<br><span style="opacity:.8">' + esc(f.message) + '</span>' : '') + '</span></div>';
       }).join('') + '</div>';
     }
-    h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Connected devices</b>' +
-      '<div data-cp-devs class="mix-note" style="margin:4px 0">Loading…</div></div>';
-    // One location: the main router (Router 1) makes the decisions, the routers that follow it enforce them and report back.
-    var everyone = lastList || [], peers = r.location_id ? everyone.filter(function (x) { return x.location_id === r.location_id; }) : [];
-    h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Location</b>' +
-      (r.location_id
-        ? '<p class="mix-note" style="margin:4px 0">' + esc(r.location) + ': ' + peers.map(function (x) { return esc(x.name) + (x.role === 'main' ? ' (main router: settings and decisions)' : ' (follows the main router)'); }).join(', ') +
-          '. Blocked sites, free time, the never-blocked list, sign-ins and access requests are one system: the main router decides, the other router enforces and reports what it sees.</p>'
-        : '<p class="mix-note" style="margin:4px 0">Not grouped with another router.</p>') + '</div>';
+    // A router in a place is shown together with the others at the top (devices, routers, add/remove); here just say so.
+    if (r.location_id) {
+      h += '<p class="mix-note" style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)">Part of <b>' + esc(r.location || 'a place') + '</b> as ' +
+        (r.role === 'main' ? 'the main router: it holds the rules and makes the decisions.' : 'a router that follows the main router: same rules, and it reports what it sees.') +
+        ' Its devices and the other routers are shown together at the top.</p>';
+    } else {
+      h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Connected devices</b>' +
+        '<div data-cp-devs class="mix-note" style="margin:4px 0">Loading…</div></div>';
+    }
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' +
-      (everyone.length > 1 ? '<button class="btn sm" data-cp-group>' + (r.location_id ? 'Change location' : 'Group routers as one location') + '</button>' : '') +
-      (r.location_id ? '<button class="btn sm" data-cp-leave>Leave location</button>' : '') +
       '<button class="btn sm" data-cp-recheck>Check again</button>' +
       '<button class="btn sm" data-cp-rename>' + ic('pencil', 'sm') + 'Rename</button>' +
       '<button class="btn sm" data-cp-remove>Remove from my account</button></div>' +
       '<div data-cp-edit hidden style="display:none;gap:8px;margin-top:10px"><input type="text" maxlength="60" data-cp-name value="' + esc(r.name) + '" style="flex:1;box-sizing:border-box;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"><button class="btn primary sm" data-cp-save>Save</button></div>';
-    h += '<div data-cp-grp style="display:none;margin-top:10px;padding:12px;border-radius:12px;border:1px solid rgba(100,116,139,.3);flex-direction:column;gap:10px">' +
-      '<label style="font-size:13px">Location name<input type="text" maxlength="60" data-grp-name value="' + esc(r.location || '') + '" placeholder="e.g. Home" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"></label>' +
-      '<label style="font-size:13px">Main router (makes the decisions)<select data-grp-main style="display:block;width:100%;margin-top:4px;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px">' +
-        everyone.map(function (x) { return '<option value="' + x.id + '"' + ((peers.length ? x.role === 'main' : x.id === r.id) ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select></label>' +
-      '<div style="font-size:13px">Routers that follow it<div data-grp-branch>' +
-        everyone.map(function (x) { return '<label style="display:block;margin:4px 0"><input type="checkbox" value="' + x.id + '"' + (x.location_id && x.location_id === r.location_id && x.role === 'branch' ? ' checked' : '') + '> ' + esc(x.name) + '</label>'; }).join('') + '</div></div>' +
-      '<button class="btn primary sm" data-grp-save style="align-self:flex-start">Save location</button></div>';
     el.innerHTML = h;
-    call('portal.php/connected?r=' + r.id).then(function (j) {
+    if (!r.location_id) call('portal.php/connected?r=' + r.id).then(function (j) {
       var box = el.querySelector('[data-cp-devs]'); if (!box) return;
       if (!j.devices.length) { box.textContent = 'None reported yet. Each router sends its list about once a minute.'; return; }
-      var by = {};
-      j.devices.forEach(function (d) { (by[d.router_id] = by[d.router_id] || []).push(d); });
-      box.innerHTML = '<div style="opacity:.8;margin-bottom:4px">' + j.devices.length + ' connected right now</div>' + j.routers.map(function (x) {
-        var ds = by[x.id] || [];
-        return '<div style="margin:6px 0"><b>' + esc(x.name) + '</b> (' + ds.length + ')' + (ds.length ? '' : ' <span style="opacity:.7">nothing connected or not reporting</span>') + ds.map(function (d) {
-          return '<div style="font-size:13px;padding:2px 0">' + esc(d.name || d.host || 'Unnamed device') + ' <span style="opacity:.65">· ' + esc(d.ip || '') + ' · ' + (d.wifi ? 'Wi-Fi' : 'cable') + '</span></div>';
-        }).join('') + '</div>';
+      box.innerHTML = '<div style="opacity:.8;margin-bottom:4px">' + j.devices.length + ' connected right now</div>' + j.devices.map(function (d) {
+        return '<div class="pl-dev">' + ic(d.wifi ? 'wifi' : 'cable', 'sm') + '<span class="dn">' + esc(d.name || d.host || 'Unnamed device') + '</span><span class="dm">' + esc(d.ip || '') + '</span></div>';
       }).join('');
     }).catch(function () {});
-    var grpBtn = el.querySelector('[data-cp-group]');
-    if (grpBtn) grpBtn.onclick = function () { var g = el.querySelector('[data-cp-grp]'); g.style.display = g.style.display === 'none' ? 'flex' : 'none'; };
-    var leaveBtn = el.querySelector('[data-cp-leave]');
-    if (leaveBtn) leaveBtn.onclick = function () {
-      call('portal.php/location-leave', 'POST', { id: r.id }).then(function () { toast('Left the location.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
-    };
-    var grpSave = el.querySelector('[data-grp-save]');
-    if (grpSave) grpSave.onclick = function () {
-      var main = parseInt(el.querySelector('[data-grp-main]').value, 10);
-      var branch = $$('[data-grp-branch] input:checked', el).map(function (i) { return parseInt(i.value, 10); }).filter(function (id) { return id !== main; });
-      var nm = el.querySelector('[data-grp-name]').value.trim();
-      if (!nm) { toast('Give the location a name.', true); return; }
-      call('portal.php/location-save', 'POST', { name: nm, main: main, branch: branch }).then(function () { toast('Location saved.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
-    };
     el.querySelector('[data-cp-recheck]').onclick = function () { this.disabled = true; this.textContent = 'Checking…'; fetchCaps(true); };
     var edit = el.querySelector('[data-cp-edit]');
     el.querySelector('[data-cp-rename]').onclick = function () { var on = edit.style.display === 'none'; edit.style.display = on ? 'flex' : 'none'; edit.hidden = !on; if (on) el.querySelector('[data-cp-name]').focus(); };

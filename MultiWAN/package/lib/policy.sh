@@ -113,8 +113,13 @@ pl_merge_reports() {     # <reports file: every branch's report, concatenated>
 
     # access requests: new ones are added as they are (pending); a request Router 1 already knows keeps Router 1's decision
     pl_section "$f" requests | awk -F'\t' -v re="$MAC_RE" '$1 ~ re && NF >= 4 && $4 ~ /^(pending|approved|denied)$/' > "$d/r.up"
-    awk -F'\t' -v OFS='\t' 'FILENAME == ARGV[1] { have[$1 "\t" $2] = 1; next } !(($1 "\t" $2) in have) { print $1, $2, $3, "pending" }' \
+    # only NEW pending requests: newer than the newest one merged before, so a request removed here is not brought back
+    # by Router 2 still listing it (found in the first real test: a removed request came back as pending)
+    local rm; rm=$(pl_num "$(pl_get request_merge_epoch)")
+    awk -F'\t' -v OFS='\t' -v rm="$rm" 'FILENAME == ARGV[1] { have[$1 "\t" $2] = 1; next }
+        !(($1 "\t" $2) in have) && $4 == "pending" && ($3 + 0) > rm { print $1, $2, $3, "pending" }' \
         /etc/mwadmin/site_requests "$d/r.up" > "$d/r.add"
+    pl_set request_merge_epoch "$(awk -F'\t' -v rm="$rm" '$4 == "pending" { if ($3 + 0 > rm) rm = $3 + 0 } END { print rm }' "$d/r.up")"
     # only for sites that are on the block list here
     awk -F'\t' 'FILENAME == ARGV[1] { s[$1] = 1; next } ($2 in s)' /etc/mwadmin/blocked_sites "$d/r.add" > "$d/r.add2"
     if [ -s "$d/r.add2" ]; then
@@ -217,7 +222,7 @@ pl_apply_policy() {      # <bundle file>
         sh -c '. /usr/lib/mwadmin/common.sh; . /usr/lib/mwadmin/block.sh; pause_tick' >/dev/null 2>&1
     fi
     [ $ch_l -eq 1 ] && sh /usr/lib/mwadmin/devlimit.sh apply >/dev/null 2>&1
-    log "Router 1 settings applied (sites $ch_block, groups $ch_groups, never-blocked $ch_ex, sign-in $ch_g, requests $ch_r, free time $ch_p, speed limits $ch_l)"
+    [ $((ch_block + ch_groups + ch_ex + ch_g + ch_p + ch_r + ch_l)) -gt 0 ] && log "Router 1 settings applied (sites $ch_block, groups $ch_groups, never-blocked $ch_ex, sign-in $ch_g, requests $ch_r, free time $ch_p, speed limits $ch_l)"
     rm -rf "$d"
     return 0
 }
@@ -285,9 +290,17 @@ pl_tick() {
                 got=$(md5sum "$PL_TMP/resp" 2>/dev/null | cut -d' ' -f1)
                 if [ "$code" = "200" ] && [ "$got" = "$ver" ]; then
                     cp "$PL_TMP/resp" "$PL_TMP/policy.in"
-                    pl_apply_policy "$PL_TMP/policy.in" && { pl_set applied_version "$ver"; pl_set applied_at "$now"; pl_set last_error ""; }
+                    if pl_apply_policy "$PL_TMP/policy.in"; then
+                        pl_set applied_version "$ver"; pl_set applied_at "$now"; pl_set last_error ""
+                        cp "$PL_TMP/policy.in" /etc/mwadmin/policy_last      # kept, to apply again (below)
+                    fi
                     rm -f "$PL_TMP/policy.in"
                 else pl_set last_error "the download did not match its checksum; nothing applied"; fi
+            elif [ -s /etc/mwadmin/policy_last ] && [ $((now - $(pl_num "$(cat "$MW_RUN/policy.reapply" 2>/dev/null)"))) -ge 300 ]; then
+                # every 5 minutes the last settings are applied again: what was kept only for a while (requests and
+                # sign-ins made here in the last 10 minutes) then follows Router 1. Nothing changes if nothing differs.
+                echo "$now" > "$MW_RUN/policy.reapply"
+                pl_apply_policy /etc/mwadmin/policy_last >/dev/null 2>&1
             fi
             # 2. what this router sees goes up
             pl_push "$tok" "$now" report ;;

@@ -7,6 +7,16 @@ router and the routers that follow it). Nothing is configured on the routers by 
 Set up on the website: open a router, **Group routers as one location**, pick the main router and the followers
 (or `php cli.php group <email> <name> <main id> <following id>...`). The routers find out within a minute.
 
+## What the person sees (website)
+
+The routers of one place are drawn as **one connection**: in the router picker they are one joined group
+("Rehan Home · one connection": Router 1 main, Router 2 follows), and above the router details a **place panel** shows
+Internet → Router 1 → Router 2, one list of **every device on either router** (each tagged with the router it is on),
+and the routers of the place with **Make main**, **Remove** and **Add to <place>** / **Connect a new router**. Routers that are
+not in a place get a "Put your routers together" card. The per-router details are unchanged underneath.
+Devices: each router uploads the devices answering on its LAN (ARP, name from the sign-in list or the device's host name,
+Wi-Fi or cable) with its once-a-minute heartbeat (`ingest.php`, table `devices_now`); `portal.php/connected` joins the place.
+
 ## What goes which way
 
 | | Down: Router 1 to Router 2 (the "policy") | Up: Router 2 to Router 1 (the "report") |
@@ -17,6 +27,8 @@ Set up on the website: open a router, **Group routers as one location**, pick th
 | Sign-in list | Router 1's list, plus anyone who signed in on Router 2 in the last 10 minutes | people who signed in on Router 2 |
 | Access requests | the whole table **with Router 1's decisions** (approve / deny) | new requests made on Router 2 (arrive as pending) |
 | Free-time use today | the larger number per person | the larger number per person |
+| Per-device speed limits | the list (only when the bundle carries it) | |
+| Sign-in on / off | the switch | |
 
 **Never shared:** Wi-Fi name and password, addresses, DHCP, ports, line setup, admin password, keys, tokens.
 Device names travel inside the sign-in list and the never-blocked list; DHCP reservations (which hold addresses) do not.
@@ -55,9 +67,15 @@ touched): valid-only lists, sign-in keep/drop, decisions kept, larger use wins, 
 bundles refused, a removed person not re-added. The website side: `policy.php` answers Router 2 with its real token
 (role none before grouping, branch after).
 
-**Not tested: the whole loop on the two real routers** (Router 1 sending, Router 2 applying and the blocking actually
-working on Router 2's network, an approval coming down, a person signing in on Router 2). The routers must both run
-this software first.
+Tested on the two real routers (2026-11-26): Router 1's six blocked sites arrived on Router 2; a request made on Router 2
+(fake test device 02:00:00:00:00:01) reached Router 1 as pending, Router 1's approval came back down to Router 2, and after
+removing it on Router 1 it stayed gone on both (this found and fixed the "removed request comes back" bug; 17 sandbox checks).
+Both routers' device lists reach the website. Router 2 applies the last settings again every 5 minutes, so what it keeps only
+for a while (its own new requests and sign-ins) then follows Router 1.
+
+**Not tested yet:** a real person signing in on Router 2 and appearing on Router 1; the blocking actually stopping a real device
+on Router 2's network; per-device speed limits arriving on Router 2 (none are set on Router 1); the place panel with the real
+data (checked only with mock data in a browser).
 
 ## Known limits
 
