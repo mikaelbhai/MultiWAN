@@ -916,7 +916,8 @@ function pickRouter(list) {
   var html = list.map(function (r) {
     var s = r.site || {}, up = r.reachable && s.internet;
     return '<button data-pick="' + r.id + '"' + (r.id === selId ? ' class="on"' : '') + '><i' + (up ? ' class="up"' : '') + '></i>' +
-      '<span><b>' + esc(r.name) + '</b><small>' + esc(s.location || (r.reachable ? 'No location set' : 'Offline')) + '</small></span></button>';
+      '<span><b>' + esc(r.name) + '</b><small>' + (r.role ? esc(r.location || 'Location') + ' · ' + (r.role === 'main' ? 'main router' : 'follows main') + ' · ' : '') +
+        esc(s.location || (r.reachable ? 'No place set' : 'Offline')) + '</small></span></button>';
   }).join('');
   if (pick.getAttribute('data-k') !== html) { pick.innerHTML = html; pick.setAttribute('data-k', html); }
   $$('[data-pick]', pick).forEach(function (b) {
@@ -1276,12 +1277,56 @@ function paintCompat(r) {
           '<span class="tag ' + s[1] + '" style="flex:none">' + esc(s[0]) + '</span><span><b>' + esc(f.label) + '</b>' + (f.message ? '<br><span style="opacity:.8">' + esc(f.message) + '</span>' : '') + '</span></div>';
       }).join('') + '</div>';
     }
+    h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Connected devices</b>' +
+      '<div data-cp-devs class="mix-note" style="margin:4px 0">Loading…</div></div>';
+    // One location: the main router (Router 1) makes the decisions, the routers that follow it enforce them and report back.
+    var everyone = lastList || [], peers = r.location_id ? everyone.filter(function (x) { return x.location_id === r.location_id; }) : [];
+    h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Location</b>' +
+      (r.location_id
+        ? '<p class="mix-note" style="margin:4px 0">' + esc(r.location) + ': ' + peers.map(function (x) { return esc(x.name) + (x.role === 'main' ? ' (main router: settings and decisions)' : ' (follows the main router)'); }).join(', ') +
+          '. Blocked sites, free time, the never-blocked list, sign-ins and access requests are one system: the main router decides, the other router enforces and reports what it sees.</p>'
+        : '<p class="mix-note" style="margin:4px 0">Not grouped with another router.</p>') + '</div>';
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' +
+      (everyone.length > 1 ? '<button class="btn sm" data-cp-group>' + (r.location_id ? 'Change location' : 'Group routers as one location') + '</button>' : '') +
+      (r.location_id ? '<button class="btn sm" data-cp-leave>Leave location</button>' : '') +
       '<button class="btn sm" data-cp-recheck>Check again</button>' +
       '<button class="btn sm" data-cp-rename>' + ic('pencil', 'sm') + 'Rename</button>' +
       '<button class="btn sm" data-cp-remove>Remove from my account</button></div>' +
       '<div data-cp-edit hidden style="display:none;gap:8px;margin-top:10px"><input type="text" maxlength="60" data-cp-name value="' + esc(r.name) + '" style="flex:1;box-sizing:border-box;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"><button class="btn primary sm" data-cp-save>Save</button></div>';
+    h += '<div data-cp-grp style="display:none;margin-top:10px;padding:12px;border-radius:12px;border:1px solid rgba(100,116,139,.3);flex-direction:column;gap:10px">' +
+      '<label style="font-size:13px">Location name<input type="text" maxlength="60" data-grp-name value="' + esc(r.location || '') + '" placeholder="e.g. Home" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"></label>' +
+      '<label style="font-size:13px">Main router (makes the decisions)<select data-grp-main style="display:block;width:100%;margin-top:4px;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px">' +
+        everyone.map(function (x) { return '<option value="' + x.id + '"' + ((peers.length ? x.role === 'main' : x.id === r.id) ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select></label>' +
+      '<div style="font-size:13px">Routers that follow it<div data-grp-branch>' +
+        everyone.map(function (x) { return '<label style="display:block;margin:4px 0"><input type="checkbox" value="' + x.id + '"' + (x.location_id && x.location_id === r.location_id && x.role === 'branch' ? ' checked' : '') + '> ' + esc(x.name) + '</label>'; }).join('') + '</div></div>' +
+      '<button class="btn primary sm" data-grp-save style="align-self:flex-start">Save location</button></div>';
     el.innerHTML = h;
+    call('portal.php/connected?r=' + r.id).then(function (j) {
+      var box = el.querySelector('[data-cp-devs]'); if (!box) return;
+      if (!j.devices.length) { box.textContent = 'None reported yet. Each router sends its list about once a minute.'; return; }
+      var by = {};
+      j.devices.forEach(function (d) { (by[d.router_id] = by[d.router_id] || []).push(d); });
+      box.innerHTML = '<div style="opacity:.8;margin-bottom:4px">' + j.devices.length + ' connected right now</div>' + j.routers.map(function (x) {
+        var ds = by[x.id] || [];
+        return '<div style="margin:6px 0"><b>' + esc(x.name) + '</b> (' + ds.length + ')' + (ds.length ? '' : ' <span style="opacity:.7">nothing connected or not reporting</span>') + ds.map(function (d) {
+          return '<div style="font-size:13px;padding:2px 0">' + esc(d.name || d.host || 'Unnamed device') + ' <span style="opacity:.65">· ' + esc(d.ip || '') + ' · ' + (d.wifi ? 'Wi-Fi' : 'cable') + '</span></div>';
+        }).join('') + '</div>';
+      }).join('');
+    }).catch(function () {});
+    var grpBtn = el.querySelector('[data-cp-group]');
+    if (grpBtn) grpBtn.onclick = function () { var g = el.querySelector('[data-cp-grp]'); g.style.display = g.style.display === 'none' ? 'flex' : 'none'; };
+    var leaveBtn = el.querySelector('[data-cp-leave]');
+    if (leaveBtn) leaveBtn.onclick = function () {
+      call('portal.php/location-leave', 'POST', { id: r.id }).then(function () { toast('Left the location.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
+    };
+    var grpSave = el.querySelector('[data-grp-save]');
+    if (grpSave) grpSave.onclick = function () {
+      var main = parseInt(el.querySelector('[data-grp-main]').value, 10);
+      var branch = $$('[data-grp-branch] input:checked', el).map(function (i) { return parseInt(i.value, 10); }).filter(function (id) { return id !== main; });
+      var nm = el.querySelector('[data-grp-name]').value.trim();
+      if (!nm) { toast('Give the location a name.', true); return; }
+      call('portal.php/location-save', 'POST', { name: nm, main: main, branch: branch }).then(function () { toast('Location saved.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
+    };
     el.querySelector('[data-cp-recheck]').onclick = function () { this.disabled = true; this.textContent = 'Checking…'; fetchCaps(true); };
     var edit = el.querySelector('[data-cp-edit]');
     el.querySelector('[data-cp-rename]').onclick = function () { var on = edit.style.display === 'none'; edit.style.display = on ? 'flex' : 'none'; edit.hidden = !on; if (on) el.querySelector('[data-cp-name]').focus(); };

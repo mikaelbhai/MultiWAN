@@ -154,6 +154,18 @@ log() { logger -t mwadmin "$*"; }
 # `mwan3 status` takes over a second on this CPU and nearly every page asks
 # for it (often twice per request). One reading is shared by all requests
 # for 5 seconds.
+# Router 2 mode runs without mwan3 (one line, nothing to fail over to), so there is no real status to read.
+# This writes the same text `mwan3 status` would, for the one line: online when its port has a link and an
+# address. Everything that parses the status (dashboard, website, line state) then works unchanged.
+mwan3_router2_text() {
+    local d; d=$(uci -q get network.wan1.device)
+    if [ -n "$d" ] && [ "$(cat "/sys/class/net/$d/carrier" 2>/dev/null)" = "1" ] && [ -n "$(ip -4 -o addr show dev "$d" 2>/dev/null)" ]; then
+        printf 'Interface status:\n interface wan1 is online and tracking is active (Router 2: one line, not tracked)\n\nCurrent ipv4 policies:\nprio_failover:\n wan1 (100%%)\n\n'
+    else
+        printf 'Interface status:\n interface wan1 is offline and tracking is down (Router 2: no link or no address)\n\n'
+    fi
+}
+
 mwan3_status_cached() {
     local f="$MW_RUN/mwan3.status" now then
     now=$(cut -d. -f1 /proc/uptime)
@@ -162,6 +174,6 @@ mwan3_status_cached() {
         case "$then" in ''|*[!0-9]*) then=0 ;; esac
         if [ $((now - then)) -ge 0 ] && [ $((now - then)) -lt 5 ]; then sed 1d "$f"; return; fi
     fi
-    { echo "$now"; mwan3 status 2>/dev/null; } > "$f.$$" && mv "$f.$$" "$f"
+    { echo "$now"; if [ "$(cat /etc/mwadmin/mode 2>/dev/null)" = "router2" ]; then mwan3_router2_text; else mwan3 status 2>/dev/null; fi; } > "$f.$$" && mv "$f.$$" "$f"
     sed 1d "$f"
 }

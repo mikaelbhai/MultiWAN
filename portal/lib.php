@@ -42,9 +42,24 @@ function db(): PDO {
         id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         key_hash TEXT UNIQUE NOT NULL, prefix TEXT NOT NULL, label TEXT NOT NULL,
         created INTEGER NOT NULL, last_used INTEGER, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0)');
+    // A location groups a main router (Router 1, the brain) with the routers that follow it (Router 2, ...).
+    // policy: what the main router decided (settings, decisions); report: what each following router saw.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS locations (
+        id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS policy (
+        location_id INTEGER PRIMARY KEY REFERENCES locations(id) ON DELETE CASCADE,
+        version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL, from_router INTEGER)');
+    // Devices connected to each router right now (replaced on every upload that carries a list).
+    $pdo->exec('CREATE TABLE IF NOT EXISTS devices_now (
+        router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE, mac TEXT NOT NULL, ip TEXT, host TEXT, name TEXT,
+        wifi INTEGER, seen INTEGER NOT NULL, PRIMARY KEY (router_id, mac))');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS reports (
+        router_id INTEGER PRIMARY KEY REFERENCES routers(id) ON DELETE CASCADE,
+        version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL)');
     $have = [];
     foreach ($pdo->query('PRAGMA table_info(routers)') as $c) $have[$c['name']] = true;
-    foreach (['device_id' => 'TEXT', 'api_key_id' => 'INTEGER', 'caps_json' => 'TEXT', 'caps_at' => 'INTEGER'] as $col => $type) {
+    foreach (['device_id' => 'TEXT', 'api_key_id' => 'INTEGER', 'caps_json' => 'TEXT', 'caps_at' => 'INTEGER',
+              'location_id' => 'INTEGER', 'role' => 'TEXT'] as $col => $type) {
         if (empty($have[$col])) { try { $pdo->exec("ALTER TABLE routers ADD COLUMN $col $type"); } catch (Throwable $e) { /* another request added it first */ } }
     }
     return $pdo;

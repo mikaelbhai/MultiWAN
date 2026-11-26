@@ -82,6 +82,43 @@ switch ("$method $route") {
         db()->prepare('UPDATE routers SET name = ? WHERE id = ?')->execute([$nm, $rid]);
         json_out(200, ['ok' => true]);
 
+    case 'POST /location-save':
+        // Put routers together as one location: one main router (the brain) and the routers that follow it.
+        // {name, main: router id, branch: [router ids]}. Routers left out of the lists leave the location.
+        $u = require_user();
+        $b = read_json_body(4096);
+        $nm = trim(mb_substr(preg_replace('/[\x00-\x1f\x7f]/u', '', (string) ($b['name'] ?? '')), 0, 60));
+        if ($nm === '') fail(400, 'Give the location a name.');
+        $main = (int) ($b['main'] ?? 0);
+        $branch = array_values(array_unique(array_map('intval', (array) ($b['branch'] ?? []))));
+        if (!$main || !router_for($u, $main)) fail(403, 'The main router is not on your account.');
+        if (count($branch) > 8) fail(400, 'At most 8 following routers.');
+        foreach ($branch as $bid) { if ($bid === $main || !router_for($u, $bid)) fail(403, 'A following router is not on your account.'); }
+        $pdo = db();
+        db_retry(function () use ($pdo, $u, $nm, $main, $branch) {
+            $cur = $pdo->prepare('SELECT location_id FROM routers WHERE id = ?'); $cur->execute([$main]);
+            $lid = (int) (one($cur)['location_id'] ?? 0);
+            if ($lid) {
+                $own = $pdo->prepare('SELECT 1 FROM locations WHERE id = ? AND user_id = ?'); $own->execute([$lid, $u['id']]);
+                if (!one($own)) $lid = 0;
+            }
+            if ($lid) $pdo->prepare('UPDATE locations SET name = ? WHERE id = ?')->execute([$nm, $lid]);
+            else { $pdo->prepare('INSERT INTO locations (user_id, name) VALUES (?, ?)')->execute([$u['id'], $nm]); $lid = (int) $pdo->lastInsertId(); }
+            // everything that was in this location and is not in the new lists leaves it
+            $pdo->prepare('UPDATE routers SET location_id = NULL, role = NULL WHERE location_id = ?')->execute([$lid]);
+            $pdo->prepare("UPDATE routers SET location_id = ?, role = 'main' WHERE id = ?")->execute([$lid, $main]);
+            foreach ($branch as $bid) $pdo->prepare("UPDATE routers SET location_id = ?, role = 'branch' WHERE id = ?")->execute([$lid, $bid]);
+        });
+        json_out(200, ['ok' => true]);
+
+    case 'POST /location-leave':
+        $u = require_user();
+        $b = read_json_body(4096);
+        $rid = (int) ($b['id'] ?? 0);
+        if (!router_for($u, $rid)) fail(403, 'This router is not assigned to your account.');
+        db()->prepare('UPDATE routers SET location_id = NULL, role = NULL WHERE id = ?')->execute([$rid]);
+        json_out(200, ['ok' => true]);
+
     case 'POST /router-remove':
         // Takes the router off this account. If nobody else has it, its record and history go too;
         // the router itself keeps working, it just stops reporting here (and stops being reachable from here).
@@ -93,7 +130,7 @@ switch ("$method $route") {
         $pdo->prepare('DELETE FROM user_routers WHERE user_id = ? AND router_id = ?')->execute([$u['id'], $rid]);
         $st = $pdo->prepare('SELECT COUNT(*) FROM user_routers WHERE router_id = ?'); $st->execute([$rid]);
         if (!(int) $st->fetchColumn()) {
-            foreach (['app_use', 'visits', 'site_totals', 'events', 'alerts', 'line_watch', 'router_watch', 'relay', 'relay_seen', 'enroll_keys'] as $t) {
+            foreach (['app_use', 'visits', 'site_totals', 'events', 'alerts', 'line_watch', 'router_watch', 'relay', 'relay_seen', 'enroll_keys', 'reports'] as $t) {
                 try { $pdo->prepare("DELETE FROM $t WHERE router_id = ?")->execute([$rid]); } catch (Throwable $e) { /* table not created yet */ }
             }
             $pdo->prepare('DELETE FROM routers WHERE id = ?')->execute([$rid]);
@@ -111,6 +148,9 @@ switch ("$method $route") {
     case 'GET /routers':
         $u = require_user();
         $out = [];
+        $locNames = [];
+        $lq = db()->prepare('SELECT id, name FROM locations WHERE user_id = ?'); $lq->execute([$u['id']]);
+        foreach ($lq->fetchAll() as $lr) $locNames[(int) $lr['id']] = $lr['name'];
         foreach (routers_of($u) as $r) {
             // Short timeout: an offline router answers "connection refused"
             // at once, and a slow one must not stall the whole dashboard.
@@ -145,7 +185,10 @@ switch ("$method $route") {
                                 'https_seen' => $relaySeen ?: null],
                 'id'        => (int) $r['id'],
                 'name'      => $r['name'],
-                'reachable' => $via !== null,                      // the tunnel answers, or the HTTPS channel is polling
+                'location_id' => $r['location_id'] ? (int) $r['location_id'] : null,
+                'location'  => ($r['location_id'] && isset($locNames[(int) $r['location_id']])) ? $locNames[(int) $r['location_id']] : null,
+                'role'      => in_array($r['role'], ['main', 'branch'], true) ? $r['role'] : null,
+                'reachable' => $via !== null,                     // the tunnel answers, or the HTTPS channel is polling
                 'last_seen' => $site ? time() : ($r['last_seen'] ? (int) $r['last_seen'] : null),
                 // when unreachable, the last state we saw — so the card still
                 // says where the router is and what it was using
@@ -153,6 +196,38 @@ switch ("$method $route") {
             ];
         }
         json_out(200, ['ok' => true, 'routers' => $out, 'now' => time()]);
+
+    case 'GET /connected':
+        // Devices connected right now, for the router asked about and every router in its location.
+        // A device named on one router shows that name on the other too (matched by MAC address).
+        $u = require_user();
+        $rid = (int) ($_GET['r'] ?? 0);
+        $r = router_for($u, $rid);
+        if (!$r) fail(403, 'This router is not assigned to your account.');
+        $pdo = db();
+        if (!empty($r['location_id'])) {
+            $q = $pdo->prepare('SELECT r.id, r.name, r.role FROM routers r JOIN user_routers ur ON ur.router_id = r.id
+                                WHERE r.location_id = ? AND ur.user_id = ? ORDER BY (r.role = \'main\') DESC, r.id');
+            $q->execute([$r['location_id'], $u['id']]);
+        } else {
+            $q = $pdo->prepare('SELECT id, name, role FROM routers WHERE id = ?'); $q->execute([$rid]);
+        }
+        $rs = $q->fetchAll();
+        $names = [];
+        $devs = [];
+        foreach ($rs as $x) {
+            $dq = $pdo->prepare('SELECT mac, ip, host, name, wifi, seen FROM devices_now WHERE router_id = ? AND seen > ? ORDER BY name = \'\', name, host, mac');
+            $dq->execute([(int) $x['id'], time() - 300]);     // a router that stopped uploading shows nothing stale
+            foreach ($dq->fetchAll() as $d) {
+                if ($d['name'] !== '' && empty($names[$d['mac']])) $names[$d['mac']] = $d['name'];
+                $devs[] = ['router_id' => (int) $x['id'], 'router' => $x['name'], 'role' => $x['role'],
+                           'mac' => $d['mac'], 'ip' => $d['ip'], 'host' => $d['host'], 'name' => $d['name'],
+                           'wifi' => (bool) $d['wifi'], 'seen' => (int) $d['seen']];
+            }
+        }
+        foreach ($devs as &$d) { if ($d['name'] === '' && !empty($names[$d['mac']])) $d['name'] = $names[$d['mac']]; }
+        unset($d);
+        json_out(200, ['ok' => true, 'devices' => $devs, 'routers' => array_map(function ($x) { return ['id' => (int) $x['id'], 'name' => $x['name'], 'role' => $x['role']]; }, $rs), 'now' => time()]);
 
     case 'GET /activity':
         $u = require_user();

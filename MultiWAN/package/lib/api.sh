@@ -73,7 +73,8 @@ mwan3_mode() {
 . /usr/lib/mwadmin/caps.sh
 
 api_status() {
-    local mode; mode=$(sh /usr/lib/mwadmin/modeswitch.sh mode | sed -n 's/.*"mode":"\([a-z]*\)".*/\1/p')
+    # [a-z0-9]: the name "router2" has a digit (with [a-z] alone it read as no mode and the panel showed "Main router")
+    local mode; mode=$(sh /usr/lib/mwadmin/modeswitch.sh mode | sed -n 's/.*"mode":"\([a-z0-9]*\)".*/\1/p')
     local active_list; active_list=$(mwan3_active_ifaces)
     local active; active=$(printf '%s\n' "$active_list" | head -n1)
     local mwmode; mwmode=$(mwan3_mode)
@@ -2812,6 +2813,9 @@ api_dispatch() {
         /site/force:POST)         api_site_force ;;
         /capabilities:GET)        api_capabilities ;;
         /connect:GET)             api_connect_get ;;
+        /policy:GET)              printf '{"ok":true,"policy":%s}\n' "$(sh /usr/lib/mwadmin/policy.sh status)" ;;
+        /policy/sync:POST)        rm -f /tmp/mwadmin/policy.last /tmp/mwadmin/locks/plsync.lock 2>/dev/null; sh /usr/lib/mwadmin/policy.sh tick >/dev/null 2>&1
+                                  printf '{"ok":true,"policy":%s}\n' "$(sh /usr/lib/mwadmin/policy.sh status)" ;;
         /connect:POST)            api_connect_post ;;
         /quality:GET)             api_quality_get ;;
         /quality/test:POST)       api_quality_test ;;

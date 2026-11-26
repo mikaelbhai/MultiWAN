@@ -2053,6 +2053,8 @@ views.remote = function () {
         '<button class="btn btn-primary" id="cn-go">' + (cn.connected ? 'Connect to this website instead' : 'Connect') + '</button>' +
         '<p class="hint" id="cn-msg" style="margin-top:10px"></p>' +
       '</div></div>' +
+      '<div class="page-head" style="margin-top:22px"><h3>Settings shared with your other router</h3></div>' +
+      '<div class="card"><div class="card-body" id="pol-card"><span class="badge">checking…</span></div></div>' +
       '<div class="page-head" style="margin-top:22px"><h3>Other ways in</h3></div>' +
       '<div class="alert alert-info"><strong>Method 1 — relay tunnel (below): </strong>outbound-only, ' +
         'the router is never directly reachable, but needs a relay host and a one-time setup step there. ' +
@@ -2121,6 +2123,23 @@ views.remote = function () {
 
     pollRemote();
 
+    function ago(ts) { ts = +ts || 0; if (!ts) return 'never'; var s = Math.max(0, Math.round(Date.now() / 1000 - ts)); return s < 90 ? 'just now' : (s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'); }
+    function paintPolicy(p) {
+      var el = $('#pol-card'); if (!el) return;
+      var role = p.role, line;
+      if (role === 'main') line = '<b>This is the main router.</b> It holds the settings and makes every decision. Blocked sites, free time, the never-blocked list, sign-ins and access requests are sent to your other router, and what that router sees comes back here. Last sent ' + ago(p.pushed_at) + '; last report from the other router taken in ' + ago(p.reports_applied_at) + '.';
+      else if (role === 'branch') line = '<b>This router follows your main router.</b> Blocked sites, free time, the never-blocked list, sign-ins and access decisions come from the main router; changes made on this panel to those are replaced the next time the main router sends them. What this router sees (sign-ins, access requests, free-time use) goes to the main router. Settings last applied ' + ago(p.applied_at) + '; report last sent ' + ago(p.report_pushed_at) + '.';
+      else line = 'This router is not part of a location with another router. Group them on your website (open the router there, <b>Group routers as one location</b>) and the settings are shared automatically. Wi-Fi names and passwords, addresses and line setup are never shared.';
+      el.innerHTML = '<p class="hint" style="margin-top:0">' + line + '</p>' +
+        (p.last_error ? '<p class="hint" style="color:var(--bad,#c33)">Last problem: ' + esc(p.last_error) + '</p>' : '') +
+        (role === 'main' || role === 'branch' ? '<button class="btn" id="pol-sync">Sync now</button> <span class="hint" id="pol-msg"></span>' : '');
+      var b = $('#pol-sync');
+      if (b) b.onclick = function () {
+        b.disabled = true; $('#pol-msg').textContent = 'Syncing…';
+        api('/policy/sync', { method: 'POST', body: {} }).then(function (rr) { paintPolicy(rr.policy || {}); }).catch(function (e) { b.disabled = false; $('#pol-msg').textContent = ''; toast(e.message, 'error'); });
+      };
+    }
+    api('/policy').then(function (rr) { paintPolicy(rr.policy || {}); }).catch(function () { var el = $('#pol-card'); if (el) el.innerHTML = '<p class="hint" style="margin:0">Not available on this router yet.</p>'; });
     $('#cn-go').onclick = function () {
       var site = $('#cn-site').value.trim(), key = $('#cn-key').value.trim(), msg = $('#cn-msg'), btn = $('#cn-go');
       if (!site || !key) { msg.textContent = 'Enter the website address and the key.'; return; }

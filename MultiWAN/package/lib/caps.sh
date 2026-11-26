@@ -41,6 +41,7 @@ wifi|1|Wi-Fi settings|/wifi|uci -q get wireless.@wifi-device[0] >/dev/null 2>&1 
 drives|1|USB drive sharing|/drives|[ -x /etc/init.d/ksmbd ] || echo "file sharing (ksmbd) is not installed"
 quality|1|Line quality test|/quality|
 connect|1|Connect to a website|/connect|
+shared_settings|1|Settings shared between routers|/policy /policy/sync|
 software|1|Software update|/software|
 EOF
 }

@@ -38,6 +38,7 @@ function web_features(): array {
         'drives'          => ['USB drive sharing',                     1, ['/drives']],
         'quality'         => ['Line quality test',                     1, ['/quality']],
         'connect'         => ['Connect to a website',                  1, ['/connect']],
+        'shared_settings' => ['Settings shared between routers',       1, ['/policy', '/policy/sync']],
         'software'        => ['Software update',                       1, ['/software']],
     ];
 }

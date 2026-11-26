@@ -48,6 +48,33 @@ ev_cacert() {
     [ -s "$b" ] && printf -- '--cacert %s' "$b"
 }
 
+# Devices connected to this router right now, as a JSON list for the website:
+# [["mac","ip","host name","name",wifi(1/0)], ...]. "Connected" = answering on the LAN (ARP). The name is the
+# one this router knows (signed-in name), else the host name the device gave. Wi-Fi = on a radio's station list.
+ev_devices_json() {
+    local wifi i
+    wifi=$( for i in $(ls /sys/class/net 2>/dev/null | grep -E '^phy[0-9]+-ap'); do
+                iwinfo "$i" assoclist 2>/dev/null | awk 'toupper($1) ~ /^([0-9A-F][0-9A-F]:){5}[0-9A-F][0-9A-F]$/ { print tolower($1) }'
+            done | tr '\n' ' ')
+    { echo "@wifi $wifi"; echo "@guests"; cat /etc/mwadmin/guests 2>/dev/null
+      echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null; echo "@arp"; cat /proc/net/arp 2>/dev/null; } | awk '
+        function clean(s) { gsub(/\\/, "", s); gsub(/"/, "", s); gsub(/[\001-\037]/, "", s); return s }
+        /^@wifi/ { n = split($0, a, " "); for (i = 2; i <= n; i++) w[a[i]] = 1; next }
+        /^@/ { sec = $1; next }
+        sec == "@guests" { n = split($0, g, "\t"); if (n >= 4) gn[g[1]] = g[4]; next }
+        sec == "@leases" && NF >= 3 { m = tolower($2); h[m] = ($4 == "*" ? "" : $4); next }
+        sec == "@arp" && $6 == "br-lan" && $3 != "0x0" { m = tolower($4); ip[m] = $1; on[m] = 1; next }
+        END {
+            printf "["
+            f = 1
+            for (m in on) {
+                printf "%s[\"%s\",\"%s\",\"%s\",\"%s\",%d]", (f ? "" : ","), clean(m), clean(ip[m]), clean(h[m]), clean(gn[m]), ((m in w) ? 1 : 0)
+                f = 0
+            }
+            printf "]"
+        }'
+}
+
 # One upload. Sends unsent events and the activity spool; marks them sent
 # only when the website confirms. Quiet when the internet is down.
 ev_push() {
@@ -74,7 +101,9 @@ ev_push() {
         [ -s "$act" ] && awk -F'\t' 'BEGIN{ORS=""} {
             for (i=1;i<=NF;i++) { gsub(/\\/,"",$i); gsub(/"/,"",$i); gsub(/[\001-\037]/,"",$i) }
             printf "%s[\"%s\",%d,\"%s\",\"%s\",\"%s\",\"%s\",%d]", (NR>1?",":""), $1, $2, $3, $4, $5, $6, $7 }' "$act"
-        printf ']}'
+        printf '],"devices":'
+        ev_devices_json
+        printf '}'
     } > "$body"
     local n_ev; n_ev=$(tail -n +"$((sent + 1))" "$EV_LOG" | head -n 500 | wc -l)
     # The normal route first; if that fails, each other online line in turn
@@ -196,6 +225,8 @@ ev_watch() {
             sh /usr/lib/mwadmin/events.sh push >/dev/null 2>&1
             # switches / access points / routers listed under Nodes: down for 2 min = an event
             sh /usr/lib/mwadmin/nodewatch.sh tick >/dev/null 2>&1
+            # settings shared between the routers of one location (Router 1 sends, Router 2 follows)
+            sh /usr/lib/mwadmin/policy.sh tick >/dev/null 2>&1
             # shared USB drives follow devices whose address changed (every 3 min)
             [ $((n % 3)) -eq 1 ] && [ -s /etc/mwadmin/drives ] && sh /usr/lib/mwadmin/drive.sh apply >/dev/null 2>&1
             n=$((n + 1))

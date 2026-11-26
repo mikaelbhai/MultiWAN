@@ -62,6 +62,17 @@ foreach (array_slice((array) ($b['activity'] ?? []), 0, 60000) as $a) {
     }
     elseif ($a[0] === 'u')            { $iu->execute([$rid, $ts, $mac, $ip, $name, $clip($a[5], 64), (int) $a[6]]); $na++; }
 }
+// Devices connected right now: when the upload carries a list, it replaces this router's previous one.
+if (array_key_exists('devices', $b) && is_array($b['devices'])) {
+    $pdo->prepare('DELETE FROM devices_now WHERE router_id = ?')->execute([$rid]);
+    $idv = $pdo->prepare('INSERT OR REPLACE INTO devices_now (router_id, mac, ip, host, name, wifi, seen) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    foreach (array_slice($b['devices'], 0, 400) as $d) {
+        if (!is_array($d) || count($d) < 4) continue;
+        $dm = strtolower($clip($d[0], 17));
+        if (!preg_match('/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/', $dm)) continue;
+        $idv->execute([$rid, $dm, $clip($d[1], 45), $clip($d[2], 64), $clip($d[3], 64), (int) ($d[4] ?? 0), time()]);
+    }
+}
 $pdo->prepare('UPDATE routers SET last_seen = ? WHERE id = ?')->execute([time(), $rid]);
 $pdo->exec('COMMIT');
 break;

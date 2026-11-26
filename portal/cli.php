@@ -73,6 +73,15 @@ switch ($cmd) {
     case 'unassign':
         $pdo->prepare('DELETE FROM user_routers WHERE user_id = ? AND router_id = ?')->execute([uid($pdo, $a[0] ?? ''), (int) ($a[1] ?? 0)]);
         echo "unassigned\n"; break;
+    case 'group':
+        // one location: the main router (Router 1, decides) and the routers that follow it
+        $uidv = uid($pdo, $a[0] ?? ''); $nm = trim((string) ($a[1] ?? '')); $main = (int) ($a[2] ?? 0); $branch = array_map('intval', array_slice($a, 3));
+        if ($nm === '' || !$main || !$branch) { fwrite(STDERR, "usage: group <email> <location name> <main router id> <following router id>...\n"); exit(1); }
+        $pdo->prepare('INSERT INTO locations (user_id, name) VALUES (?, ?)')->execute([$uidv, $nm]);
+        $lid = (int) $pdo->lastInsertId();
+        $pdo->prepare("UPDATE routers SET location_id = ?, role = 'main' WHERE id = ?")->execute([$lid, $main]);
+        foreach ($branch as $bid) $pdo->prepare("UPDATE routers SET location_id = ?, role = 'branch' WHERE id = ?")->execute([$lid, $bid]);
+        echo "location $lid: main router $main, following " . implode(', ', $branch) . "\n"; break;
     case 'list':
         foreach ($pdo->query('SELECT id, email, is_admin FROM users') as $u) echo "user {$u['id']}: {$u['email']}" . ($u['is_admin'] ? ' (admin)' : '') . "\n";
         foreach ($pdo->query('SELECT id, name, tunnel_port, last_seen FROM routers') as $r) echo "router {$r['id']}: {$r['name']} port {$r['tunnel_port']} last seen " . ($r['last_seen'] ? date('c', $r['last_seen']) : 'never') . "\n";
