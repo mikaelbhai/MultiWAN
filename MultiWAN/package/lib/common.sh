@@ -9,6 +9,20 @@ MW_PROFILES="$MW_STATE/profiles"
 
 mkdir -p "$MW_RUN/ports" "$MW_RUN/locks" "$MW_STATE/portdata" "$MW_PROFILES" 2>/dev/null
 
+# Devices really on the LAN right now, one MAC per line. The ARP table alone is not enough: it remembers a device
+# that left ("STALE") for a long time, and those were counted as connected (found 2026-11-27: 8 "connected", 2 real).
+# A device counts when its neighbour entry is live (REACHABLE / DELAY / PROBE), or when it sent traffic through a
+# bridge port in the last 5 minutes (the bridge's own table), or when it is associated with this router's Wi-Fi.
+mw_active_macs() {
+    {
+        ip -4 neigh show dev br-lan 2>/dev/null | awk '$0 ~ /REACHABLE|DELAY|PROBE|PERMANENT/ { for (i = 1; i <= NF; i++) if ($i == "lladdr") print tolower($(i + 1)) }'
+        hexdump -v -e '16/1 "%02x " "\n"' /sys/class/net/br-lan/brforward 2>/dev/null | awk '$8 == "00" { print $1 ":" $2 ":" $3 ":" $4 ":" $5 ":" $6 }'
+        for i in $(ls /sys/class/net 2>/dev/null | grep -E '^phy[0-9]+-ap'); do
+            iwinfo "$i" assoclist 2>/dev/null | awk 'toupper($1) ~ /^([0-9A-F][0-9A-F]:){5}[0-9A-F][0-9A-F]$/ { print tolower($1) }'
+        done
+    } | sort -u
+}
+
 # Memory profile. A router with 128 MB of memory (under ~200 MB: /tmp is then only ~60 MB) runs the same software with
 # smaller RAM caches and earlier clean-up; everything else, the website connection included, is the same (docs/14).
 # MW_LIM_* are the limits every RAM cache uses.

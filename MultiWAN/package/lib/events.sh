@@ -57,13 +57,14 @@ ev_devices_json() {
                 iwinfo "$i" assoclist 2>/dev/null | awk 'toupper($1) ~ /^([0-9A-F][0-9A-F]:){5}[0-9A-F][0-9A-F]$/ { print tolower($1) }'
             done | tr '\n' ' ')
     { echo "@wifi $wifi"; echo "@guests"; cat /etc/mwadmin/guests 2>/dev/null
-      echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null; echo "@arp"; cat /proc/net/arp 2>/dev/null; } | awk -v tsv="$MW_RUN/devices.now.new" '
+      echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null; echo "@active"; mw_active_macs; echo "@arp"; cat /proc/net/arp 2>/dev/null; } | awk -v tsv="$MW_RUN/devices.now.new" '
         function clean(s) { gsub(/\\/, "", s); gsub(/"/, "", s); gsub(/[\001-\037]/, "", s); return s }
         /^@wifi/ { n = split($0, a, " "); for (i = 2; i <= n; i++) w[a[i]] = 1; next }
         /^@/ { sec = $1; next }
         sec == "@guests" { n = split($0, g, "\t"); if (n >= 4) gn[g[1]] = g[4]; next }
         sec == "@leases" && NF >= 3 { m = tolower($2); h[m] = ($4 == "*" ? "" : $4); next }
-        sec == "@arp" && $6 == "br-lan" && $3 != "0x0" { m = tolower($4); ip[m] = $1; on[m] = 1; next }
+        sec == "@active" { act[$1] = 1; next }
+        sec == "@arp" && $6 == "br-lan" && $3 != "0x0" && (tolower($4) in act) { m = tolower($4); ip[m] = $1; on[m] = 1; next }
         END {
             printf "["
             f = 1

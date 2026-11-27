@@ -216,13 +216,15 @@ api_guests_get() {
     {
         echo "@guests"; cat "$G_FILE" 2>/dev/null
         echo "@leases"; cat /tmp/dhcp.leases 2>/dev/null
+        echo "@active"; mw_active_macs                 # only devices really here now (a stale ARP entry is not)
         echo "@arp";    cat /proc/net/arp 2>/dev/null
     } | awk '
         function q(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/[\001-\037]/, "", s); return "\"" s "\"" }
         /^@/ { sec = $1; next }
         sec == "@guests" { n = split($0, a, "\t"); if (n >= 4) { ng++; gm[ng] = a[1]; gp[a[1]] = a[2]; gt[a[1]] = a[3]; gn[a[1]] = a[4]; known[a[1]] = 1 } next }
         sec == "@leases" && NF >= 3 { m = tolower($2); host[m] = ($4 == "*" ? "" : $4); lip[m] = $3; next }
-        sec == "@arp" && $6 == "br-lan" && $3 != "0x0" { m = tolower($4); on[m] = 1; aip[m] = $1; next }
+        sec == "@active" { act[$1] = 1; next }
+        sec == "@arp" && $6 == "br-lan" && $3 != "0x0" && (tolower($4) in act) { m = tolower($4); on[m] = 1; aip[m] = $1; next }
         END {
             printf "\"guests\":["
             for (i = ng; i >= 1; i--) {
