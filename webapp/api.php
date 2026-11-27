@@ -38,6 +38,8 @@ if ($route === '/login') fail(403, 'Sign in at the Baytaar home page.');
 
 $router = router_for($user, $routerId);
 if (!$router) fail(403, 'This router is not assigned to your account.');
+// Shared as "can view": everything can be looked at, nothing can be changed (every change to a router is a POST).
+if (($router['access'] ?? 'owner') === 'view' && $method !== 'GET') fail(403, 'You can view this router but not change it. Ask its owner for "can manage".');
 
 $query = clean_query($_SERVER['QUERY_STRING'] ?? '');
 $body  = $method === 'POST' ? read_json_body() : null;

@@ -51,6 +51,24 @@ function db(): PDO {
         version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL, from_router INTEGER)');
     // Daily backups waiting for the main router's USB drive (a router without a drive, or a main router whose drive is
     // missing, leaves its days here; the main router writes them to the drive and then they are deleted).
+    // Sharing: user_routers.role is owner (the account the router joined), manage (can change settings) or view
+    // (sees everything, changes nothing). Invites for someone without an account yet: a link, once, 7 days, and only
+    // for the email it was made for.
+    $urc = [];
+    foreach ($pdo->query('PRAGMA table_info(user_routers)') as $c) $urc[$c['name']] = true;
+    if (empty($urc['role'])) { try { $pdo->exec("ALTER TABLE user_routers ADD COLUMN role TEXT NOT NULL DEFAULT 'owner'"); } catch (Throwable $e) { /* added meanwhile */ } }
+    // "Sign in with your browser" for the Windows installer (link.php): the installer asks for a code, the person
+    // approves it on this website while signed in, and the installer then gets a short-lived API key once.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS link_requests (
+        code TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, ip TEXT,
+        user_id INTEGER, approved INTEGER, key_plain TEXT, delivered INTEGER)');
+    $akc = [];
+    foreach ($pdo->query('PRAGMA table_info(api_keys)') as $c) $akc[$c['name']] = true;
+    if (empty($akc['expires'])) { try { $pdo->exec('ALTER TABLE api_keys ADD COLUMN expires INTEGER'); } catch (Throwable $e) { /* added meanwhile */ } }
+    $pdo->exec('CREATE TABLE IF NOT EXISTS invites (
+        id INTEGER PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL, inviter INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT NOT NULL, role TEXT NOT NULL, router_ids TEXT NOT NULL, label TEXT, created INTEGER NOT NULL,
+        expires INTEGER NOT NULL, used_by INTEGER, used_at INTEGER)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS archives (
         router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE, day TEXT NOT NULL,
         version TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (router_id, day))');
@@ -106,15 +124,16 @@ function register_user(string $email, string $password): array {
 }
 
 // A new reusable API key for this user. Returns the key (shown once; only its hash is kept).
-function api_key_create(array $user, string $label): array {
+// $expires: 0 = never (a key made on the website); a time = a short-lived key (the Windows installer's, see link.php).
+function api_key_create(array $user, string $label, int $expires = 0): array {
     $pdo = db();
-    $st = $pdo->prepare('SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0'); $st->execute([$user['id']]);
+    $st = $pdo->prepare('SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0 AND (expires IS NULL OR expires > ?)'); $st->execute([$user['id'], time()]);
     $n = (int) $st->fetchColumn(); $st->closeCursor();
     if ($n >= MAX_KEYS_PER_USER) fail(400, 'You already have ' . MAX_KEYS_PER_USER . ' active keys. Revoke one first.');
     $key = 'bu' . bin2hex(random_bytes(20));
-    $kid = db_retry(function () use ($pdo, $user, $key, $label) {
-        $pdo->prepare('INSERT INTO api_keys (user_id, key_hash, prefix, label, created) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$user['id'], hash('sha256', $key), substr($key, 0, 6), $label, time()]);
+    $kid = db_retry(function () use ($pdo, $user, $key, $label, $expires) {
+        $pdo->prepare('INSERT INTO api_keys (user_id, key_hash, prefix, label, created, expires) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$user['id'], hash('sha256', $key), substr($key, 0, 6), $label, time(), $expires ?: null]);
         return (int) $pdo->lastInsertId();
     });
     return [$kid, $key];
@@ -243,18 +262,43 @@ function logout(): void {
 }
 
 // The router row, but only if this user is assigned to it.
+// 'access' on the row: owner | manage | view (see the sharing tables in db()).
 function router_for(array $user, int $routerId): ?array {
-    $st = db()->prepare('SELECT r.* FROM routers r JOIN user_routers ur ON ur.router_id = r.id
+    $st = db()->prepare('SELECT r.*, ur.role AS access FROM routers r JOIN user_routers ur ON ur.router_id = r.id
                          WHERE r.id = ? AND ur.user_id = ?');
     $st->execute([$routerId, $user['id']]);
     return one($st) ?: null;
 }
 
 function routers_of(array $user): array {
-    $st = db()->prepare('SELECT r.* FROM routers r JOIN user_routers ur ON ur.router_id = r.id
+    $st = db()->prepare('SELECT r.*, ur.role AS access FROM routers r JOIN user_routers ur ON ur.router_id = r.id
                          WHERE ur.user_id = ? ORDER BY r.name');
     $st->execute([$user['id']]);
     return $st->fetchAll();
+}
+
+// What is being shared: a whole place {location_id} (every router of it the user owns) or one router {router_id}.
+// Returns [label, router ids]; fails unless the user owns them.
+function share_targets(array $user, array $b): array {
+    $lid = (int) ($b['location_id'] ?? 0);
+    if ($lid) {
+        $st = db()->prepare("SELECT r.id, l.name FROM routers r JOIN locations l ON l.id = r.location_id JOIN user_routers ur ON ur.router_id = r.id
+                             WHERE r.location_id = ? AND ur.user_id = ? AND ur.role = 'owner' ORDER BY r.id");
+        $st->execute([$lid, $user['id']]);
+        $rows = $st->fetchAll();
+        if (!$rows) fail(403, 'Only the owner of this place can share it.');
+        return [$rows[0]['name'], array_map(function ($x) { return (int) $x['id']; }, $rows)];
+    }
+    $r = router_owned($user, (int) ($b['router_id'] ?? 0));
+    return [$r['name'], [(int) $r['id']]];
+}
+
+// Only the owner may share, rename, regroup or remove a router.
+function router_owned(array $user, int $routerId): array {
+    $r = router_for($user, $routerId);
+    if (!$r) fail(403, 'This router is not on your account.');
+    if (($r['access'] ?? 'owner') !== 'owner') fail(403, 'Only the owner of this router can do that.');
+    return $r;
 }
 
 // One call down a router's tunnel. Returns [httpCode, contentType, body, disposition]

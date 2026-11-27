@@ -7,7 +7,7 @@ router (guided), 5 the essential settings, 6 install the Baytaar software (Multi
 Talks to the router through OpenWrt's own web interface (/ubus JSON-RPC on port 80, the same one LuCI uses): log in,
 write files, run commands. Needs nothing installed on the PC. Python standard library only.
 """
-import base64, hashlib, json, os, queue, re, shlex, socket, subprocess, sys, threading, time, urllib.request, webbrowser
+import base64, hashlib, json, os, queue, re, shlex, socket, subprocess, sys, threading, time, urllib.parse, urllib.request, webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -53,6 +53,14 @@ FLASH_STEPS = {
         "Open http://192.168.1.1 (LuCI) and sign in.",
         "Go to System, then Backup / Flash Firmware, then Flash image. Choose the file shown below. UNTICK 'Keep settings' and press Continue.",
         "Do not unplug the router. After about 3 minutes it restarts with a clean OpenWrt.",
+    ],
+    # any other router OpenWrt supports: the maker's own update page usually takes OpenWrt's "factory" file
+    "generic": [
+        "Connect this PC to one of the router's LAN ports with a network cable. Turn off this PC's Wi-Fi.",
+        "Open the router's own settings page (the address is on its sticker) and sign in.",
+        "Find its firmware update page (often under System, Administration or Advanced) and upload the file shown below.",
+        "If it refuses the file, open OpenWrt's page for this model (button below): some routers need a special first step. "
+        "Do not unplug the router while it updates; it then restarts with OpenWrt at 192.168.1.1.",
     ],
 }
 
@@ -170,10 +178,11 @@ class App(tk.Tk):
 
     # ---- plumbing -----------------------------------------------------------------------------------------------
     def _pump(self):
-        try:
-            while True:
-                fn = self.q.get_nowait(); fn()
-        except queue.Empty: pass
+        while True:
+            try: fn = self.q.get_nowait()
+            except queue.Empty: break
+            try: fn()
+            except tk.TclError: pass          # an update for a page that is no longer shown: drop it, keep the queue going
         self.after(100, self._pump)
     def ui(self, fn): self.q.put(fn)
     def bg(self, fn): threading.Thread(target=fn, daemon=True).start()
@@ -208,17 +217,58 @@ class App(tk.Tk):
     # ---- 1 account -----------------------------------------------------------------------------------------------
     def p_account(self):
         f = self.clear()
-        self.head(f, "Your website account", "The router joins your account on the website when it is installed. Sign in on the website, "
-                  "press Add a router, and copy the website address and the API key here. You can also skip this and connect the router later.")
+        self.head(f, "Your website account", "The router joins your account on the website when it is installed. "
+                  "The easiest way: sign in with your browser. You can also paste an API key, or skip and connect the router later.")
         self.v_site = tk.StringVar(value=self.state_["site"]); self.v_key = tk.StringVar(value=self.state_["key"])
-        self.field(f, "Website address", self.v_site); self.field(f, "API key", self.v_key, width=50)
+        self.field(f, "Website address", self.v_site)
+        r = tk.Frame(f, bg="white"); r.pack(anchor="w", pady=(10, 4))
+        self.signin_b = ttk.Button(r, text="Sign in with your browser", style="Primary.TButton", command=self.browser_signin)
+        self.signin_b.pack(side="left")
+        self.code_lbl = tk.Label(r, text="", bg="white", fg="#0f172a", font=("Consolas", 16, "bold")); self.code_lbl.pack(side="left", padx=14)
+        ttk.Label(f, text="Or paste an API key (website, Add a router):", style="Sub.TLabel").pack(anchor="w", pady=(12, 0))
+        self.field(f, "API key", self.v_key, width=50)
         self.v_skip = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Skip: install without joining a website", variable=self.v_skip).pack(anchor="w", pady=(10, 0))
         self.acc_msg = ttk.Label(f, text="", style="Sub.TLabel", wraplength=540); self.acc_msg.pack(anchor="w", pady=12)
 
+    # Sign in with the browser: the website gives a short code, the browser opens the website where the person (signed
+    # in) presses Connect after checking the code matches; this then receives a key valid 24 hours, once (link.php).
+    def browser_signin(self):
+        site = self.v_site.get().strip().replace("https://", "").replace("http://", "").strip("/") or DEFAULT_SITE
+        self.signin_b.configure(state="disabled"); self.acc_msg.configure(text="Asking %s for a sign-in code..." % site, style="Sub.TLabel")
+        self._link_gen = getattr(self, "_link_gen", 0) + 1; gen = self._link_gen
+        def work():
+            try:
+                st, j = http_json("https://%s/router/link.php" % site, {"action": "start"})
+                if st != 200 or not j.get("ok"): raise RuntimeError(j.get("error") or "the website answered HTTP %s" % st)
+                code, secret, url = j["code"], j["secret"], j["url"]
+                self.ui(lambda: (self.code_lbl.configure(text=code),
+                                 self.acc_msg.configure(text="Your browser opens %s. Sign in there, check it shows the code %s, and press Connect. Waiting..." % (site, code), style="Sub.TLabel")))
+                webbrowser.open(url)
+                t0 = time.time()
+                while time.time() - t0 < 600 and gen == self._link_gen:
+                    time.sleep(2)
+                    st, p = http_json("https://%s/router/link.php" % site, {"action": "poll", "secret": secret})
+                    state = p.get("state")
+                    if state == "approved" and p.get("key"):
+                        self.state_.update(site=site, key=p["key"], account=p.get("account", ""))
+                        self.ui(lambda: (self.v_key.set("(signed in with the browser)"), self.code_lbl.configure(text="✓", fg="#047857"),
+                                         self.acc_msg.configure(text="Connected to account %s." % p.get("account", ""), style="Ok.TLabel"),
+                                         self.after(900, lambda: self.page == 0 and self.show(1))))
+                        return
+                    if state == "expired": break
+                if gen != self._link_gen: return       # pressed again, or left this page: a newer attempt owns the screen
+                self.ui(lambda: (self.code_lbl.configure(text=""), self.signin_b.configure(state="normal"),
+                                 self.acc_msg.configure(text="The sign-in code expired. Press the button again.", style="Bad.TLabel")))
+            except Exception as e:
+                err = str(e)
+                self.ui(lambda: (self.signin_b.configure(state="normal"), self.acc_msg.configure(text="Could not sign in with %s: %s" % (site, err), style="Bad.TLabel")))
+        self.bg(work)
+
     def n0(self):
         if self.v_skip.get():
             self.state_.update(site="", key="", account=""); return self.show(1)
+        if self.v_key.get().startswith("(signed in") and self.state_.get("key"): return self.show(1)   # already linked by the browser
         site = self.v_site.get().strip().replace("https://", "").replace("http://", "").strip("/")
         key = self.v_key.get().strip()
         if not site or not key: return self.acc_msg.configure(text="Enter both, or tick Skip.", style="Bad.TLabel")
@@ -234,7 +284,8 @@ class App(tk.Tk):
                     msg = j.get("error") or "The website did not accept the key (HTTP %s)." % st
                     self.ui(lambda: (self.acc_msg.configure(text=msg, style="Bad.TLabel"), self.next_b.configure(state="normal")))
             except Exception as e:
-                self.ui(lambda: (self.acc_msg.configure(text="Could not reach %s: %s" % (site, e), style="Bad.TLabel"), self.next_b.configure(state="normal")))
+                err = str(e)
+                self.ui(lambda: (self.acc_msg.configure(text="Could not reach %s: %s" % (site, err), style="Bad.TLabel"), self.next_b.configure(state="normal")))
         self.bg(work)
 
     # ---- 2 model -------------------------------------------------------------------------------------------------
@@ -247,12 +298,65 @@ class App(tk.Tk):
             box = tk.Frame(f, bg="white", highlightthickness=1, highlightbackground="#d7dce5"); box.pack(fill="x", pady=5)
             ttk.Radiobutton(box, text=m["title"], value=m["id"], variable=self.v_model).pack(anchor="w", padx=10, pady=(8, 0))
             ttk.Label(box, text=m["label"] + "  " + m["status"], style="Sub.TLabel", wraplength=500).pack(anchor="w", padx=34, pady=(0, 8))
-        ttk.Radiobutton(f, text="Something else", value="other", variable=self.v_model).pack(anchor="w", pady=(8, 0))
-        self.model_msg = ttk.Label(f, text="", style="Bad.TLabel", wraplength=540); self.model_msg.pack(anchor="w", pady=8)
+        ttk.Radiobutton(f, text="Something else: find it in OpenWrt's list of supported routers", value="other", variable=self.v_model,
+                        command=self._other_toggle).pack(anchor="w", pady=(8, 0))
+        self.other_box = tk.Frame(f, bg="white")
+        r = tk.Frame(self.other_box, bg="white"); r.pack(anchor="w", fill="x")
+        ttk.Label(r, text="Model on the sticker:").pack(side="left")
+        self.v_search = tk.StringVar(); e = ttk.Entry(r, textvariable=self.v_search, width=40); e.pack(side="left", padx=6)
+        self.v_search.trace_add("write", lambda *a: self._other_filter())
+        self.other_list = tk.Listbox(self.other_box, height=6, width=78, font=("Segoe UI", 10), activestyle="none", exportselection=False)
+        self.other_list.pack(anchor="w", pady=(6, 0))
+        self.other_hint = ttk.Label(self.other_box, text="Type the brand and model, e.g. Archer C7 or Xiaomi AX3000T, then pick the exact hardware version.",
+                                    style="Sub.TLabel", wraplength=540)
+        self.other_hint.pack(anchor="w", pady=(4, 0))
+        self.model_msg = ttk.Label(f, text="", style="Bad.TLabel", wraplength=540); self.model_msg.pack(anchor="w", pady=8, side="bottom")
+        self._other_rows = []
+        if self.v_model.get() == "other" or (self.state_["model"] or {}).get("generic"): self.v_model.set("other"); self._other_toggle()
+
+    # every router OpenWrt supports (its own list, the release the website recommends): id, target, title
+    def _other_toggle(self):
+        if self.v_model.get() != "other": self.other_box.pack_forget(); return
+        self.other_box.pack(anchor="w", fill="x", pady=(4, 0))
+        if getattr(self, "_overview", None) is not None: return self._other_filter()
+        self.other_hint.configure(text="Loading OpenWrt's list of routers...")
+        def work():
+            try:
+                ver = FALLBACK_OPENWRT
+                if self.state_["site"]:
+                    st, j = http_json("https://%s/router/fw/openwrt.json" % self.state_["site"])
+                    if st == 200: ver = j.get("default") or ver
+                st, ov = http_json("https://downloads.openwrt.org/releases/%s/.overview.json" % ver, timeout=60)
+                rows = []
+                for p in ov.get("profiles", []):
+                    for t in p.get("titles", []):
+                        title = " ".join(x for x in (t.get("vendor", ""), t.get("model", ""), t.get("variant", "")) if x) or t.get("title", "")
+                        rows.append((title, p["id"], p["target"]))
+                rows.sort(key=lambda x: x[0].lower())
+                self._overview = (ver, rows)
+                self.ui(lambda: (self.other_hint.configure(text="%d routers. Type the brand and model, then pick the exact hardware version." % len(rows)), self._other_filter()))
+            except Exception as ex:
+                err = str(ex)
+                self.ui(lambda: self.other_hint.configure(text="Could not load OpenWrt's list: %s" % err))
+        self.bg(work)
+
+    def _other_filter(self):
+        if getattr(self, "_overview", None) is None: return
+        q = [w for w in self.v_search.get().lower().replace("-", " ").split() if w]
+        rows = [r for r in self._overview[1] if all(w in (r[0] + " " + r[1]).lower().replace("-", " ") for w in q)] if q else []
+        self._other_rows = rows[:200]
+        self.other_list.delete(0, "end")
+        for r in self._other_rows: self.other_list.insert("end", "%s     (%s)" % (r[0], r[1]))
 
     def n1(self):
         v = self.v_model.get()
-        if v == "other": return self.model_msg.configure(text="Other routers are not supported yet. Nothing was changed.")
+        if v == "other":
+            sel = self.other_list.curselection() if hasattr(self, "other_list") else ()
+            if not sel: return self.model_msg.configure(text="Search for the router and click its exact model and version in the list.")
+            title, pid, target = self._other_rows[sel[0]]
+            self.state_["model"] = {"id": pid, "title": title, "board": "", "target": target, "stock": "generic", "usb": False, "generic": True,
+                                    "status": "Supported by OpenWrt; not tested with the Baytaar software yet."}
+            return self.show(2)
         m = next((x for x in MODELS if x["id"] == v), None)
         if not m: return self.model_msg.configure(text="Pick the model on the sticker.")
         self.state_["model"] = m; self.show(2)
@@ -264,7 +368,10 @@ class App(tk.Tk):
                   "The installer gets the version recommended for this model, from openwrt.org, and checks it against OpenWrt's own checksum.")
         self.v_now = tk.StringVar(value="stock")
         ttk.Label(f, text="What is on the router now?").pack(anchor="w", pady=(4, 2))
-        ttk.Radiobutton(f, text="Its original %s software" % ("Linksys" if m["stock"] == "linksys" else "TP-Link"), value="stock", variable=self.v_now).pack(anchor="w")
+        ttk.Radiobutton(f, text="Its original %s software" % {"linksys": "Linksys", "tplink": "TP-Link"}.get(m["stock"], "maker's"), value="stock", variable=self.v_now).pack(anchor="w")
+        if m.get("generic"):
+            ttk.Label(f, text="Some routers need a special first step to get OpenWrt on. The installer opens OpenWrt's page for this model after the download: follow it if the maker's update page refuses the file.",
+                      style="Sub.TLabel", wraplength=540).pack(anchor="w", pady=(2, 6))
         ttk.Radiobutton(f, text="OpenWrt already (it will be replaced with a clean copy)", value="openwrt", variable=self.v_now).pack(anchor="w")
         ttk.Radiobutton(f, text="OpenWrt %s already, freshly installed: skip this step" % FALLBACK_OPENWRT, value="skip", variable=self.v_now).pack(anchor="w")
         self.pb = ttk.Progressbar(f, length=520, mode="determinate"); self.pb.pack(anchor="w", pady=(18, 4))
@@ -289,8 +396,13 @@ class App(tk.Tk):
                 st, prof = http_json(base + "profiles.json")
                 p = (prof.get("profiles") or {}).get(m["id"])
                 if st != 200 or not p: raise RuntimeError("OpenWrt %s has no image for this model." % ver)
-                if m["board"] not in p.get("supported_devices", [m["board"]]): raise RuntimeError("OpenWrt's image does not list this board.")
+                boards = p.get("supported_devices") or ([m["board"]] if m["board"] else [])
+                if m["board"] and m["board"] not in boards: raise RuntimeError("OpenWrt's image does not list this board.")
+                m["boards"] = boards                                  # the router must report one of these
                 img = next((i for i in p["images"] if i["type"] == kind), None)
+                if not img and kind == "factory":
+                    raise RuntimeError("OpenWrt has no ready-to-upload file for this model's original software: it needs a special first step. "
+                                       "See https://openwrt.org/toh/start for this model; once it runs OpenWrt, choose 'OpenWrt already'.")
                 if not img: raise RuntimeError("No %s image for this model." % kind)
                 dest = os.path.join(self.dl_dir, img["name"])
                 if os.path.exists(dest) and hashlib.sha256(open(dest, "rb").read()).hexdigest() == img["sha256"]:
@@ -302,13 +414,15 @@ class App(tk.Tk):
                 self.ui(lambda: (self.pb.configure(value=100), self.ow_msg.configure(text="OpenWrt %s downloaded and checked: %s" % (ver, dest), style="Ok.TLabel"),
                                  self.after(900, lambda: self.show(3))))
             except Exception as e:
-                self.ui(lambda: (self.ow_msg.configure(text=str(e), style="Bad.TLabel"), self.next_b.configure(state="normal")))
+                err = str(e)
+                self.ui(lambda: (self.ow_msg.configure(text=err, style="Bad.TLabel"), self.next_b.configure(state="normal")))
         self.bg(work)
 
     # ---- 4 flash -------------------------------------------------------------------------------------------------------
     def p_flash(self):
         f = self.clear(); m = self.state_["model"]
         steps = FLASH_STEPS["openwrt" if self.state_["image_kind"] == "openwrt" else m["stock"]]
+        if m.get("generic") and self.state_["image_kind"] != "openwrt": steps = FLASH_STEPS["generic"]
         self.head(f, "Put OpenWrt on the router", "Follow these steps, then press Next. The installer waits for the router to come back with OpenWrt.")
         for i, s in enumerate(steps):
             ttk.Label(f, text="%d.  %s" % (i + 1, s), wraplength=540, justify="left").pack(anchor="w", pady=3)
@@ -316,8 +430,11 @@ class App(tk.Tk):
         ttk.Label(r, text="File:").pack(side="left")
         e = ttk.Entry(r, width=62); e.insert(0, self.state_["image"]); e.configure(state="readonly"); e.pack(side="left", padx=6)
         b = tk.Frame(f, bg="white"); b.pack(anchor="w")
-        url = "http://192.168.1.1" if m["stock"] == "linksys" or self.state_["image_kind"] == "openwrt" else "http://tplinkwifi.net"
+        url = "http://192.168.1.1" if m["stock"] in ("linksys", "generic") or self.state_["image_kind"] == "openwrt" else "http://tplinkwifi.net"
         ttk.Button(b, text="Open the router page", command=lambda: webbrowser.open(url)).pack(side="left")
+        if m.get("generic"):
+            q = urllib.parse.quote(m["title"])
+            ttk.Button(b, text="OpenWrt's page for this model", command=lambda: webbrowser.open("https://openwrt.org/start?do=search&q=" + q)).pack(side="left", padx=(8, 0))
         ttk.Button(b, text="Show the file", command=lambda: subprocess.Popen(["explorer", "/select,", self.state_["image"]])).pack(side="left", padx=8)
         ttk.Label(f, text="If something goes wrong: unplug the router's power, plug it back in and hold the Reset button while it starts; "
                   "OpenWrt then starts in safe mode at 192.168.1.1.", style="Sub.TLabel", wraplength=540).pack(anchor="w", pady=(14, 0))
@@ -395,8 +512,9 @@ class App(tk.Tk):
     def install(self):
         try: self._install()
         except Exception as e:
-            self.log("STOPPED: %s" % e)
-            self.ui(lambda: (self.steps_v.configure(text="Stopped: %s" % e), self.next_b.configure(state="normal", text="Back to settings", command=lambda: (self.next_b.configure(command=self.next), self.show(4)))))
+            err = str(e)
+            self.log("STOPPED: %s" % err)
+            self.ui(lambda: (self.steps_v.configure(text="Stopped: %s" % err), self.next_b.configure(state="normal", text="Back to settings", command=lambda: (self.next_b.configure(command=self.next), self.show(4)))))
 
     def _find_openwrt(self, password):
         self.phase(1, "Waiting for the router with OpenWrt at %s" % OPENWRT_IP)
@@ -421,7 +539,8 @@ class App(tk.Tk):
         board = (u.call("system", "board") or {})
         bn, rel = board.get("board_name", "?"), (board.get("release") or {}).get("version", "?")
         self.log("Found OpenWrt %s on %s." % (rel, bn))
-        if bn != m["board"]: raise RuntimeError("This router reports '%s', not the %s you chose. Nothing was changed." % (bn, m["title"]))
+        boards = m.get("boards") or ([m["board"]] if m["board"] else [])
+        if boards and bn not in boards: raise RuntimeError("This router reports '%s', not the %s you chose. Nothing was changed." % (bn, m["title"]))
         if not rel.startswith(("25.", "26.")): raise RuntimeError("OpenWrt %s is too old for the Baytaar software; put OpenWrt %s on it first." % (rel, self.state_["ow_ver"] or FALLBACK_OPENWRT))
         code, out, _ = u.run("df -k /overlay | awk 'NR==2{print $4}'")
         self.log("Free storage: %s KB." % out.strip())
@@ -437,7 +556,8 @@ class App(tk.Tk):
         self.phase(3, "Writing the settings")
         env = self._mwan_env(m, g)
         ienv = "\n".join("%s=%s" % (k, sh_q(v)) for k, v in [("WEB_SITE", self.state_["site"]), ("WEB_KEY", self.state_["key"]),
-                       ("ROUTER_PASSWORD", g["pw"]), ("ROUTER_NAME", g["name"]), ("FW_VERSION", vj["version"])]) + "\n"
+                       ("ROUTER_PASSWORD", g["pw"]), ("ROUTER_NAME", g["name"]), ("FW_VERSION", vj["version"]),
+                       ("LINES", 1 + int(bool(g["l2"])) + int(bool(g["l3"] and g["l2"])))]) + "\n"
         u.run("rm -rf /tmp/baytaar-install; mkdir -p /tmp/baytaar-install/config")
         for fn in sorted(os.listdir(res("config"))):
             if fn.endswith(".sh"):

@@ -56,6 +56,12 @@ if [ -n "$WEB_SITE" ] && [ -n "$WEB_KEY" ]; then
 fi
 
 # 5. the router's own settings, stage by stage (the network stage changes the address: the PC's connection drops here)
+# Ports come from this router itself (hwdetect.sh reads /etc/board.json), so any model OpenWrt supports gets its own
+# port names: the internet port, then LAN ports for the second and third lines. Appended last, so it wins.
+if [ -f /usr/lib/mwadmin/hwdetect.sh ]; then
+    { echo; echo "# --- this router's own ports (hwdetect.sh) ---"; sh /usr/lib/mwadmin/hwdetect.sh env "${LINES:-2}"; } >> ./config/mwan.env
+    echo "ports: $(grep -E '^PORT_|^PORTS_LAN' ./config/mwan.env | tail -4 | tr '\n' ' ')" >> "$L"
+fi
 st "network";  sh ./config/10-network.sh     >> "$L" 2>&1 || fail "network settings"
 sleep 5; /etc/init.d/mwadmin restart >/dev/null 2>&1          # the panel (and the progress file) now answer at the new address
 pub

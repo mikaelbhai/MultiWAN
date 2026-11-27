@@ -45,8 +45,8 @@ $base = 'https://' . $host . $dir . '/';
 // a wrong key counts against the same limit as a wrong join.
 if (!empty($b['check'])) {
     $st = $pdo->prepare('SELECT k.label, u.email, (SELECT COUNT(*) FROM user_routers ur WHERE ur.user_id = k.user_id) AS n
-                         FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.revoked = 0');
-    $st->execute([$hash]);
+                         FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.revoked = 0 AND (k.expires IS NULL OR k.expires > ?)');
+    $st->execute([$hash, $now]);
     $k = $st->fetch();
     $st->closeCursor();
     if (!$k) {
@@ -62,19 +62,23 @@ if (!empty($b['check'])) {
 $pdo->exec('BEGIN IMMEDIATE');
 try {
     // ---- the account's reusable key
-    $st = $pdo->prepare('SELECT id, user_id, label FROM api_keys WHERE key_hash = ? AND revoked = 0');
-    $st->execute([$hash]);
+    $st = $pdo->prepare('SELECT id, user_id, label FROM api_keys WHERE key_hash = ? AND revoked = 0 AND (expires IS NULL OR expires > ?)');
+    $st->execute([$hash, $now]);
     $k = $st->fetch();
     $st->closeCursor();
     if ($k) {
         if ($dev === '') { $pdo->exec('ROLLBACK'); fail(400, 'This router did not send an id of its own. Update the router software and try again.'); }
         $st = $pdo->prepare('SELECT r.id, r.name, r.token FROM routers r JOIN user_routers ur ON ur.router_id = r.id
-                             WHERE ur.user_id = ? AND r.device_id = ?');
+                             WHERE ur.user_id = ? AND r.device_id = ? AND ur.role = \'owner\'');
         $st->execute([$k['user_id'], $dev]);
         $r = $st->fetch();
         $st->closeCursor();
         $new = false;
         if (!$r) {
+            $st = $pdo->prepare('SELECT 1 FROM routers r JOIN user_routers ur ON ur.router_id = r.id WHERE ur.user_id = ? AND r.device_id = ?');
+            $st->execute([$k['user_id'], $dev]);
+            $shared = $st->fetch(); $st->closeCursor();
+            if ($shared) { $pdo->exec('ROLLBACK'); fail(403, 'This router is shared with your account, not owned by it. Only its owner can connect it.'); }
             $st = $pdo->prepare('SELECT COUNT(*) FROM user_routers WHERE user_id = ?');
             $st->execute([$k['user_id']]);
             $n = (int) $st->fetchColumn();

@@ -343,6 +343,10 @@ main { max-width: 1120px; margin: 0 auto; padding: 30px 20px 64px; }
 .pl-sec > .pl-st .grow { flex: 1; }
 .pl-dev { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-top: 1px solid var(--line); font-size: 13.5px; }
 .pl-dev:first-of-type { border-top: 0; }
+.sh-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; border-top: 1px solid rgba(100,116,139,.2); flex-wrap: wrap; }
+.sh-who { flex: 1; min-width: 160px; font-size: 14px; overflow-wrap: anywhere; }
+.sh-who span { display: block; font-size: 12.5px; opacity: .7; }
+.sh-row select { padding: 7px 9px; border-radius: 9px; border: 1px solid rgba(100,116,139,.35); font-size: 13.5px; }
 .pl-dev .dn { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-dev .dm { color: var(--ink-3); font-size: 12.5px; white-space: nowrap; }
 .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; background: var(--inset); color: var(--ink-2); white-space: nowrap; }
@@ -847,16 +851,37 @@ function showDash(user) {
   $('#greet').textContent = h < 12 ? 'Good morning' : (h < 17 ? 'Good afternoon' : 'Good evening');
   if (APP) { try { APP.signedIn(); } catch (e) {} setTimeout(btAppState, 2500); }
   if (!snapShown) { var sn = snapLoad(); if (sn && sn.u === user.email) snapShown = snapShow(sn); }
+  if (PEND) {                     // the job this page was opened for (installer sign-in, or an invite)
+    var p = PEND; PEND = null;
+    try { sessionStorage.removeItem('bt-pend'); } catch (e) {}
+    setTimeout(function () { if (p.kind === 'link') linkDialog(p.v); else acceptInvite(p.v); }, 350);
+  }
   load();
   clearInterval(timer);
   timer = setInterval(function () { if (!document.hidden) load(); }, 10000);
 }
 
+/* Opened by the router installer (#link=CODE) or an invite (#invite=TOKEN): remembered through sign-in (also over a
+   reload) and handled once signed in. The address bar loses it at once, so the token is not left in the history. */
+var PEND = (function () {
+  var m = /^#(link|invite)=([A-Za-z0-9-]{4,64})$/.exec(location.hash || ''), p = null;
+  if (m) {
+    p = { kind: m[1], v: m[2] };
+    try { sessionStorage.setItem('bt-pend', JSON.stringify(p)); } catch (e) {}
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  } else { try { p = JSON.parse(sessionStorage.getItem('bt-pend') || 'null'); } catch (e) {} }
+  return p && (p.kind === 'link' || p.kind === 'invite') ? p : null;
+})();
+
 /* Sign in / create account share one card. */
 var registering = false;
 function setAuthMode(reg) {
   registering = reg;
-  $('#auth-lead').textContent = reg ? 'Create your account, then connect your routers to it.' : 'Sign in to see and control your routers.';
+  $('#auth-lead').textContent = PEND ? (PEND.kind === 'link'
+      ? 'Sign in to connect the Baytaar router installer on your PC to your account.'
+      : (reg ? 'Someone shared their routers with you. Create your account with the email address the invite was sent to.'
+             : 'Someone shared their routers with you. Sign in with the email address the invite was sent to.'))
+    : (reg ? 'Create your account, then connect your routers to it.' : 'Sign in to see and control your routers.');
   $('#auth-lbl').textContent = reg ? 'Create account' : 'Sign in';
   $('#auth-pass').setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
   $('#auth-pass').placeholder = reg ? 'At least 10 characters' : 'Your password';
@@ -867,6 +892,15 @@ function setAuthMode(reg) {
   $('#auth-err').hidden = true;
 }
 $('#auth-switch').addEventListener('click', function (e) { e.preventDefault(); setAuthMode(!registering); });
+if (PEND) setAuthMode(PEND.kind === 'invite');      // an invite is usually for someone without an account yet
+window.addEventListener('hashchange', function () { // the same tab, given a new link while this page is open
+  var m = /^#(link|invite)=([A-Za-z0-9-]{4,64})$/.exec(location.hash || ''); if (!m) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  if (!$('#dash').hidden && $('#who').textContent) { if (m[1] === 'link') linkDialog(m[2]); else acceptInvite(m[2]); return; }
+  PEND = { kind: m[1], v: m[2] };
+  try { sessionStorage.setItem('bt-pend', JSON.stringify(PEND)); } catch (e) {}
+  setAuthMode(m[1] === 'invite');
+});
 $('#auth-form').addEventListener('submit', function (e) {
   e.preventDefault();
   var btn = $('#auth-btn'), lbl = $('#auth-lbl'), err = $('#auth-err');
@@ -880,7 +914,7 @@ $('#auth-form').addEventListener('submit', function (e) {
   var req = registering
     ? call('portal.php/register', 'POST', { email: $('#auth-email').value, password: pw, website: $('#auth-website').value })
     : call('portal.php/login', 'POST', { email: $('#auth-email').value, password: pw });
-  req.then(function (j) { $('#auth-pass2').value = ''; showDash(j.user); if (registering) { setAuthMode(false); setTimeout(addRouterDialog, 400); } })
+  req.then(function (j) { var hadJob = !!PEND; $('#auth-pass2').value = ''; showDash(j.user); if (registering) { setAuthMode(false); if (!hadJob) setTimeout(addRouterDialog, 400); } })
     .catch(function (x) { bad(x.message); })
     .then(function () { btn.disabled = false; lbl.textContent = registering ? 'Create account' : 'Sign in'; });
 });
@@ -1040,7 +1074,7 @@ function pickRouter(list) {
   var done = {}, html = '';
   list.forEach(function (r) {
     if (done[r.id]) return;
-    if (!r.location_id) { done[r.id] = 1; html += btn(r, (r.site && r.site.location) || (r.reachable ? 'No place set' : 'Offline')); return; }
+    if (!r.location_id) { done[r.id] = 1; html += btn(r, ((r.access || 'owner') !== 'owner' ? 'Shared with you · ' : '') + ((r.site && r.site.location) || (r.reachable ? 'No place set' : 'Offline'))); return; }
     // a place is ONE tile: one connection, however many routers it has
     var mem = placeMembers(list, r.location_id);
     mem.forEach(function (m) { done[m.id] = 1; });
@@ -1123,12 +1157,14 @@ function renderPlace(all) {
   var others = all.filter(function (r) { return r.location_id !== lid; });
   var devs = placeDevs.lid === lid ? placeDevs.list : [];
   if (!placeTabValid(placeTab, mem)) placeTab = 'people';
-  var k = JSON.stringify([lid, name, placeTab, placeManage, mem.map(function (r) { return [r.id, r.name, r.role, routerUp(r), r.reachable]; }), others.map(function (r) { return [r.id, r.name]; }), placeDevs.lid === lid ? placeDevs.sig : '']);
+  var k = JSON.stringify([lid, name, placeTab, placeManage, mem.map(function (r) { return [r.id, r.name, r.role, routerUp(r), r.reachable, r.access]; }), others.map(function (r) { return [r.id, r.name]; }), placeDevs.lid === lid ? placeDevs.sig : '']);
   loadPlaceDevs(sel);
   if (k === placeKey) return;
   placeKey = k;
 
   var per = {}; devs.forEach(function (d) { per[d.router_id] = (per[d.router_id] || 0) + 1; });
+  var plOwn = mem.some(function (r) { return (r.access || 'owner') === 'owner'; });
+  var plView = !plOwn && mem.every(function (r) { return r.access === 'view'; });
   var ms = main.site || {}, allUp = mem.every(routerUp), anyUp = mem.some(routerUp);
   var down = mem.filter(function (r) { return !routerUp(r); }).map(function (r) { return r.name; });
 
@@ -1163,10 +1199,12 @@ function renderPlace(all) {
     '<div class="pl-head"><div class="f-ico">' + ic('building') + '</div><div style="flex:1;min-width:0"><h2 data-pl-name>' + esc(name) + '</h2>' +
       '<p>' + mem.length + ' router' + (mem.length === 1 ? '' : 's') + ' · one internet connection · ' + devs.length + ' device' + (devs.length === 1 ? '' : 's') + ' connected</p></div>' +
       '<span class="pill ' + (allUp ? 'on' : (anyUp ? 'mid' : 'off')) + '">' + (allUp ? 'All online' : (anyUp ? esc(down.join(', ')) + ' offline' : 'Offline')) + '</span>' +
-      '<button class="btn sm" data-pl-manage>' + ic('sliders', 'sm') + (placeManage ? 'Done' : 'Manage routers') + '</button>' +
-      '<button class="icon-btn" data-pl-rename title="Rename this place">' + ic('pencil', 'sm') + '</button></div>' +
+      (plOwn ? '<button class="btn sm" data-pl-share>' + ic('users', 'sm') + 'Share</button>' +
+               '<button class="btn sm" data-pl-manage>' + ic('sliders', 'sm') + (placeManage ? 'Done' : 'Manage routers') + '</button>' +
+               '<button class="icon-btn" data-pl-rename title="Rename this place">' + ic('pencil', 'sm') + '</button>'
+             : '<span class="pill mid" title="Its owner decides who has access">' + ic('users', 'sm') + ' Shared with you · ' + (plView ? 'can view' : 'can manage') + '</span>') + '</div>' +
     '<div class="pl-chain">' + chain + '</div>' +
-    (placeManage ? '<div class="pl-sec pl-manage"><div class="pl-st">' + ic('router', 'sm') + 'Routers in ' + esc(name) + '</div>' + rows +
+    (placeManage && plOwn ?'<div class="pl-sec pl-manage"><div class="pl-st">' + ic('router', 'sm') + 'Routers in ' + esc(name) + '</div>' + rows +
       '<div class="pl-add">' + (others.length ? '<select data-pl-pick>' + others.map(function (r) { return '<option value="' + r.id + '">' + esc(r.name) + (r.location ? ' (now in ' + esc(r.location) + ')' : '') + '</option>'; }).join('') + '</select>' +
         '<button class="btn sm" data-pl-add>' + ic('arrow', 'sm') + 'Add to ' + esc(name) + '</button>' : '') +
         '<button class="btn primary sm" data-pl-new>' + ic('router', 'sm') + 'Connect a new router</button></div></div>' : '') +
@@ -1205,7 +1243,8 @@ function renderPlace(all) {
     placeSave(name, main.id, branchOf(-1, [id]), r.name + ' joined ' + name + ' and follows ' + main.name + '.');
   };
   var newB = box.querySelector('[data-pl-new]'); if (newB) newB.onclick = addRouterDialog;
-  box.querySelector('[data-pl-manage]').onclick = function () { placeManage = !placeManage; placeKey = ''; renderPlace(lastList || []); };
+  var shP = box.querySelector('[data-pl-share]'); if (shP) shP.onclick = function () { shareDialog({ location_id: lid }, name, true); };
+  var mgB = box.querySelector('[data-pl-manage]'); if (mgB) mgB.onclick = function () { placeManage = !placeManage; placeKey = ''; renderPlace(lastList || []); };
   $$('[data-ptab]', box).forEach(function (b) {
     b.onclick = function () {
       placeTab = b.getAttribute('data-ptab');
@@ -1214,7 +1253,7 @@ function renderPlace(all) {
       renderPlace(lastList || []); render(lastList, lastNow); load();
     };
   });
-  box.querySelector('[data-pl-rename]').onclick = function () {
+  var rnB = box.querySelector('[data-pl-rename]'); if (rnB) rnB.onclick = function () {
     var h = box.querySelector('[data-pl-name]');
     h.outerHTML = '<div class="pl-add" style="margin:0"><input type="text" maxlength="60" data-pl-nm value="' + esc(name) + '"><button class="btn primary sm" data-pl-nmsave>Save</button></div>';
     var inp = box.querySelector('[data-pl-nm]'); inp.focus(); inp.select();
@@ -1616,16 +1655,132 @@ function askConfirm(o) {
       '<h3 style="margin:0 0 10px;font-size:18px">' + esc(o.title) + '</h3>' +
       '<div style="font-size:14px;line-height:1.55">' + o.html + '</div>' +
       '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap">' +
-        '<button class="btn" data-no>Cancel</button><button class="btn primary" data-yes>' + esc(o.ok) + '</button></div></div>';
+        (o.noCancel ? '' : '<button class="btn" data-no>Cancel</button>') + '<button class="btn primary" data-yes>' + esc(o.ok) + '</button></div></div>';
     function onkey(e) { if (e.key === 'Escape') done(false); }
     function done(v) { document.removeEventListener('keydown', onkey); wrap.remove(); resolve(v); }
     wrap.addEventListener('click', function (e) { if (e.target === wrap) done(false); });
-    wrap.querySelector('[data-no]').onclick = function () { done(false); };
+    if (!o.noCancel) wrap.querySelector('[data-no]').onclick = function () { done(false); };
     wrap.querySelector('[data-yes]').onclick = function () { done(true); };
     document.addEventListener('keydown', onkey);
     document.body.appendChild(wrap);
-    wrap.querySelector('[data-no]').focus();
+    wrap.querySelector(o.noCancel ? '[data-yes]' : '[data-no]').focus();
   });
+}
+function tell(title, html) { return askConfirm({ title: title, html: html, ok: 'OK', noCancel: true }); }
+
+// A box with a label, the text and a Copy button.
+function copyBox(label, text) {
+  var box = document.createElement('div');
+  box.style.cssText = 'margin:0 0 12px';
+  box.innerHTML = '<div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;opacity:.7;margin-bottom:4px"></div>' +
+    '<div style="display:flex;gap:8px;align-items:stretch"><code style="flex:1;word-break:break-all;padding:10px 12px;border-radius:10px;background:rgba(15,23,42,.07);font-size:13px;line-height:1.45"></code>' +
+    '<button class="btn sm" type="button">Copy</button></div>';
+  box.firstChild.textContent = label;
+  box.querySelector('code').textContent = text;
+  var cb = box.querySelector('button');
+  cb.onclick = function () {
+    var done = function () { cb.textContent = 'Copied'; setTimeout(function () { cb.textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast('Select the text and copy it by hand.', true); });
+    else toast('Select the text and copy it by hand.', true);
+  };
+  return box;
+}
+
+/* ---- Links that open this page with a job: #link=CODE (the Windows installer asks to join this account) and
+   #invite=TOKEN (someone shared routers with you). Kept through sign-in, then handled once. ---- */
+function linkDialog(code) {
+  call('portal.php/link-info?code=' + encodeURIComponent(code)).then(function (j) {
+    return askConfirm({ title: 'Connect the router installer?',
+      html: 'The Baytaar router installer asked to use your account, <b>' + esc($('#who').textContent) + '</b>.' +
+        '<div style="margin:14px 0;text-align:center"><span style="display:inline-block;padding:10px 18px;border-radius:12px;background:rgba(15,23,42,.07);font:700 22px/1.2 ui-monospace,Consolas,monospace;letter-spacing:.12em">' + esc(j.code) + '</span></div>' +
+        'Check that the installer on your PC shows this same code. Connect only if you started it yourself just now: it can then add routers to this account for the next 24 hours.',
+      ok: 'Connect' }).then(function (yes) {
+      if (!yes) { toast('Not connected.'); return; }
+      return call('portal.php/link-approve', 'POST', { code: code }).then(function (r) {
+        tell('Connected', esc(r.message || 'Connected. You can go back to the installer.') + ' You can close this tab.');
+      });
+    });
+  }).catch(function (e) { tell('The installer could not connect', esc(e.message)); });
+}
+function acceptInvite(token) {
+  call('portal.php/invite-accept', 'POST', { token: token }).then(function (j) {
+    tell('Shared with you', esc(j.message) + ' It is in your list now.'); lastKey = null; placeKey = ''; load();
+  }).catch(function (e) { tell('This invite did not work', esc(e.message)); });
+}
+
+// Share a whole place {location_id} or one router {router_id} with other accounts. Owner only.
+function shareDialog(target, label, isPlace) {
+  var q = target.location_id ? 'location_id=' + target.location_id : 'router_id=' + target.router_id;
+  var wrap = document.createElement('div');
+  wrap.setAttribute('role', 'dialog'); wrap.setAttribute('aria-modal', 'true');
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(10,14,20,.55)';
+  var inp = 'box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:15px';
+  wrap.innerHTML = '<div class="glass" style="max-width:540px;width:100%;padding:20px 22px;border-radius:16px;max-height:90vh;overflow:auto">' +
+    '<h3 style="margin:0 0 6px;font-size:18px">Share ' + esc(label) + '</h3>' +
+    '<p class="mix-note" style="margin:0 0 12px">' + (isPlace ? 'They get every router in this place. ' : 'They get this router only. ') +
+      '<b>Can view</b>: they see everything but change nothing. <b>Can manage</b>: they can change its settings too. Only you can share, rename or remove it.</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap"><input type="email" data-sh-email placeholder="Their email address" style="flex:1;min-width:190px;' + inp + '">' +
+      '<select data-sh-role style="' + inp + '"><option value="view">Can view</option><option value="manage">Can manage</option></select>' +
+      '<button class="btn primary" data-sh-go>Share</button></div>' +
+    '<div data-sh-out style="margin-top:12px"></div>' +
+    '<div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;opacity:.7;margin:14px 0 4px">People with access</div>' +
+    '<div data-sh-list><div class="mix-note">Loading…</div></div>' +
+    '<div style="display:flex;justify-content:flex-end;margin-top:16px"><button class="btn" data-sh-close>Close</button></div></div>';
+  function close() { document.removeEventListener('keydown', onkey); wrap.remove(); }
+  function onkey(e) { if (e.key === 'Escape') close(); }
+  wrap.addEventListener('click', function (e) { if (e.target === wrap) close(); });
+  document.addEventListener('keydown', onkey);
+  wrap.querySelector('[data-sh-close]').onclick = close;
+  var out = wrap.querySelector('[data-sh-out]'), listEl = wrap.querySelector('[data-sh-list]');
+  function body(extra) { var o = {}; Object.keys(target).forEach(function (k) { o[k] = target[k]; }); Object.keys(extra).forEach(function (k) { o[k] = extra[k]; }); return o; }
+  function share(email, role) {
+    return call('portal.php/share', 'POST', body({ email: email, role: role })).then(function (j) {
+      out.innerHTML = '';
+      if (j.invite) {
+        var p = document.createElement('p'); p.className = 'mix-note'; p.style.margin = '0 0 8px'; p.textContent = j.message;
+        out.appendChild(p); out.appendChild(copyBox('Invite link', j.link));
+      } else toast(j.message);
+      list();
+    });
+  }
+  function list() {
+    call('portal.php/shares?' + q).then(function (j) {
+      var rows = j.people.map(function (p) {
+        return '<div class="sh-row"><div class="sh-who"><b>' + esc(p.email) + '</b>' + (p.partial ? '<span>Some of these routers only</span>' : '') + '</div>' +
+          '<select data-sh-role-of="' + esc(p.email) + '"><option value="view"' + (p.role === 'view' ? ' selected' : '') + '>Can view</option><option value="manage"' + (p.role === 'manage' ? ' selected' : '') + '>Can manage</option></select>' +
+          '<button class="btn ghost sm" data-sh-rm="' + p.user_id + '" data-sh-em="' + esc(p.email) + '">Remove</button></div>';
+      }).concat(j.invites.map(function (v) {
+        return '<div class="sh-row"><div class="sh-who"><b>' + esc(v.email) + '</b><span>Invite not used yet · ' + (v.role === 'view' ? 'can view' : 'can manage') +
+          ' · until ' + esc(new Date(v.expires * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })) + '</span></div>' +
+          '<button class="btn ghost sm" data-sh-inv="' + v.id + '">Cancel invite</button></div>';
+      }));
+      listEl.innerHTML = rows.length ? rows.join('') : '<div class="mix-note">Only you, so far.</div>';
+      $$('[data-sh-role-of]', listEl).forEach(function (s) {
+        s.onchange = function () { s.disabled = true; share(s.getAttribute('data-sh-role-of'), s.value).catch(function (e) { toast(e.message, true); list(); }); };
+      });
+      $$('[data-sh-rm]', listEl).forEach(function (b) {
+        b.onclick = function () {
+          askConfirm({ title: 'Remove ' + b.getAttribute('data-sh-em') + '?', html: 'They will no longer see or change ' + esc(label) + '.', ok: 'Remove' }).then(function (yes) {
+            if (!yes) return;
+            call('portal.php/share-remove', 'POST', body({ user_id: parseInt(b.getAttribute('data-sh-rm'), 10) })).then(function (j) { toast(j.message); list(); }).catch(function (e) { toast(e.message, true); });
+          });
+        };
+      });
+      $$('[data-sh-inv]', listEl).forEach(function (b) {
+        b.onclick = function () { call('portal.php/share-remove', 'POST', body({ invite_id: parseInt(b.getAttribute('data-sh-inv'), 10) })).then(function (j) { toast(j.message); out.innerHTML = ''; list(); }).catch(function (e) { toast(e.message, true); }); };
+      });
+    }).catch(function (e) { listEl.textContent = e.message; });
+  }
+  var go = wrap.querySelector('[data-sh-go]'), em = wrap.querySelector('[data-sh-email]');
+  go.onclick = function () {
+    var v = em.value.trim(); if (!v) { em.focus(); return; }
+    go.disabled = true;
+    share(v, wrap.querySelector('[data-sh-role]').value).then(function () { em.value = ''; }).catch(function (e) { toast(e.message, true); }).then(function () { go.disabled = false; });
+  };
+  em.onkeydown = function (e) { if (e.key === 'Enter') go.click(); };
+  list();
+  document.body.appendChild(wrap);
+  setTimeout(function () { em.focus(); }, 30);
 }
 
 // "Add a router": your account's API key. One key works on any number of routers. On each router you
@@ -1637,7 +1792,7 @@ function addRouterDialog() {
   wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(10,14,20,.55)';
   wrap.innerHTML = '<div class="glass" style="max-width:540px;width:100%;padding:20px 22px;border-radius:16px;max-height:90vh;overflow:auto">' +
     '<h3 style="margin:0 0 6px;font-size:18px">Connect your routers</h3>' +
-    '<p class="mix-note" style="margin:0 0 10px"><b>A new router?</b> The <a href="BaytaarInstaller.exe">router installer for Windows</a> puts OpenWrt and the Baytaar software on a Linksys EA8100 or TP-Link Archer C6 v3 and joins it to your account with the key below. Windows warns that it is from an unknown publisher; choose More info, then Run anyway.</p>' +
+    '<p class="mix-note" style="margin:0 0 10px"><b>A new router?</b> The <a href="BaytaarInstaller.exe">router installer for Windows</a> puts OpenWrt and the Baytaar software on a router (step-by-step for the Linksys EA8100 and TP-Link Archer C6 v3; any router OpenWrt supports can be chosen) and joins it to your account: press <b>Sign in with your browser</b> in it, or use a key below. Windows warns that it is from an unknown publisher; choose More info, then Run anyway.</p>' +
     '<div data-body></div></div>';
   var body = wrap.querySelector('[data-body]');
   function close() { document.removeEventListener('keydown', onkey); wrap.remove(); }
@@ -1645,22 +1800,6 @@ function addRouterDialog() {
   wrap.addEventListener('click', function (e) { if (e.target === wrap) close(); });
   document.addEventListener('keydown', onkey);
 
-  function copyBox(label, text) {
-    var box = document.createElement('div');
-    box.style.cssText = 'margin:0 0 12px';
-    box.innerHTML = '<div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;opacity:.7;margin-bottom:4px"></div>' +
-      '<div style="display:flex;gap:8px;align-items:stretch"><code style="flex:1;word-break:break-all;padding:10px 12px;border-radius:10px;background:rgba(15,23,42,.07);font-size:13px;line-height:1.45"></code>' +
-      '<button class="btn sm" type="button">Copy</button></div>';
-    box.firstChild.textContent = label;
-    box.querySelector('code').textContent = text;
-    var cb = box.querySelector('button');
-    cb.onclick = function () {
-      var done = function () { cb.textContent = 'Copied'; setTimeout(function () { cb.textContent = 'Copy'; }, 1500); };
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast('Select the text and copy it by hand.', true); });
-      else toast('Select the text and copy it by hand.', true);
-    };
-    return box;
-  }
   function when(ts) { return ts ? new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : 'never'; }
 
   function list() {
@@ -1764,10 +1903,15 @@ function paintCompat(r) {
       h += '<div style="margin:10px 0 4px;padding-top:8px;border-top:1px solid rgba(100,116,139,.18)"><b>Connected devices</b>' +
         '<div data-cp-devs class="mix-note" style="margin:4px 0">Loading…</div></div>';
     }
+    var own = (r.access || 'owner') === 'owner';
+    if (!own) h += '<p class="mix-note" style="margin:10px 0 4px">' + ic('users', 'sm') + ' <b>Shared with you</b>: you can ' +
+      (r.access === 'view' ? '<b>view</b> this router but not change it.' : '<b>manage</b> this router: change its settings.') + ' Its owner decides who has access.</p>';
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' +
       '<button class="btn sm" data-cp-recheck>Check again</button>' +
-      '<button class="btn sm" data-cp-rename>' + ic('pencil', 'sm') + 'Rename</button>' +
-      '<button class="btn sm" data-cp-remove>Remove from my account</button></div>' +
+      (own ? '<button class="btn sm" data-cp-share>' + ic('users', 'sm') + 'Share</button>' +
+             '<button class="btn sm" data-cp-rename>' + ic('pencil', 'sm') + 'Rename</button>' +
+             '<button class="btn sm" data-cp-remove>Remove from my account</button>'
+           : '<button class="btn sm" data-cp-remove>Leave</button>') + '</div>' +
       '<div data-cp-edit hidden style="display:none;gap:8px;margin-top:10px"><input type="text" maxlength="60" data-cp-name value="' + esc(r.name) + '" style="flex:1;box-sizing:border-box;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,116,139,.35);font-size:14px"><button class="btn primary sm" data-cp-save>Save</button></div>';
     el.innerHTML = h;
     if (!r.location_id) call('portal.php/connected?r=' + r.id).then(function (j) {
@@ -1779,16 +1923,19 @@ function paintCompat(r) {
     }).catch(function () {});
     el.querySelector('[data-cp-recheck]').onclick = function () { this.disabled = true; this.textContent = 'Checking…'; fetchCaps(true); };
     var edit = el.querySelector('[data-cp-edit]');
-    el.querySelector('[data-cp-rename]').onclick = function () { var on = edit.style.display === 'none'; edit.style.display = on ? 'flex' : 'none'; edit.hidden = !on; if (on) el.querySelector('[data-cp-name]').focus(); };
+    var renB = el.querySelector('[data-cp-rename]'), shB = el.querySelector('[data-cp-share]');
+    if (shB) shB.onclick = function () { shareDialog({ router_id: r.id }, r.name || 'this router', false); };
+    if (renB) renB.onclick = function () { var on = edit.style.display === 'none'; edit.style.display = on ? 'flex' : 'none'; edit.hidden = !on; if (on) el.querySelector('[data-cp-name]').focus(); };
     el.querySelector('[data-cp-save]').onclick = function () {
       var nm = el.querySelector('[data-cp-name]').value.trim(); if (!nm) return;
       call('portal.php/router-rename', 'POST', { id: r.id, name: nm }).then(function () { toast('Renamed.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
     };
     el.querySelector('[data-cp-remove]').onclick = function () {
-      askConfirm({ title: 'Remove ' + (r.name || 'this router') + '?',
-        html: 'It disappears from your account and its history here is deleted. The router itself keeps working; it just stops reporting to this website. You can connect it again with your key.', ok: 'Remove' }).then(function (yes) {
+      askConfirm(own ? { title: 'Remove ' + (r.name || 'this router') + '?',
+        html: 'It disappears from your account, and from everyone you shared it with, and its history here is deleted. The router itself keeps working; it just stops reporting to this website. You can connect it again with your key.', ok: 'Remove' }
+        : { title: 'Leave ' + (r.name || 'this router') + '?', html: 'It disappears from your list. Its owner can share it with you again.', ok: 'Leave' }).then(function (yes) {
         if (!yes) return;
-        call('portal.php/router-remove', 'POST', { id: r.id }).then(function () { toast('Removed.'); lastKey = null; load(); }).catch(function (e) { toast(e.message, true); });
+        call('portal.php/router-remove', 'POST', { id: r.id }).then(function () { toast(own ? 'Removed.' : 'You left it.'); lastKey = null; placeKey = ''; load(); }).catch(function (e) { toast(e.message, true); });
       });
     };
   }
