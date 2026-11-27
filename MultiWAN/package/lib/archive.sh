@@ -208,8 +208,37 @@ ar_trim() {
     fi
 }
 
+# ---- clutter guard: nothing may fill the router's RAM disk or flash (every 10 minutes, and with every backup) -----------
+# Everything that grows already has its own limit or leaves the router (see docs/13); this catches whatever does not:
+# leftovers are always cleared, and when /tmp passes 60 % the known caches are emptied and an event says so.
+ar_guard() {
+    local use freed="" f ov day
+    # always: package lists from a software install and stray temporary copies older than a day
+    find /tmp/cache/apk -type f -mtime +0 2>/dev/null | while read -r f; do rm -f "$f"; done
+    find /tmp -maxdepth 1 -type f \( -name '*.new' -o -name '*.tmp' -o -name 't_*.sh' \) -mtime +0 2>/dev/null | while read -r f; do rm -f "$f"; done
+    use=$(df /tmp 2>/dev/null | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
+    if [ "${use:-0}" -ge 60 ]; then
+        rm -rf /tmp/cache/apk 2>/dev/null && freed="$freed package lists,"
+        rm -f /tmp/mwadmin-push.failed.json /tmp/mwadmin-push.failed.resp && freed="$freed failed-upload copies,"
+        [ -s /tmp/dnsmasq-queries.log ] && { : > /tmp/dnsmasq-queries.log; freed="$freed DNS query log,"; }
+        if [ "$(wc -c < /tmp/mwadmin-activity.spool 2>/dev/null || echo 0)" -gt 500000 ]; then
+            tail -c 500000 /tmp/mwadmin-activity.spool > /tmp/mwadmin-activity.spool.t && mv /tmp/mwadmin-activity.spool.t /tmp/mwadmin-activity.spool; freed="$freed old activity records,"
+        fi
+        f="$MW_RUN/apps.det"; [ -s "$f" ] && { sort -t"$TAB" -k4,4nr "$f" | head -n 1000 > "$f.t" && mv "$f.t" "$f"; freed="$freed app details,"; }
+        sh /usr/lib/mwadmin/events.sh add sys warn "Memory disk was ${use}% full; emptied:${freed%,} (now $(df /tmp | awk 'NR == 2 { print $5 }'))" >/dev/null 2>&1
+    fi
+    # flash: only a warning (nothing big should ever be there), once a day
+    ov=$(df /overlay 2>/dev/null | awk 'NR == 2 { gsub("%", "", $5); print $5 }'); day=$(ar_today)
+    if [ "${ov:-0}" -ge 80 ] && [ "$(cat "$MW_RUN/flashwarn" 2>/dev/null)" != "$day" ]; then
+        echo "$day" > "$MW_RUN/flashwarn"
+        sh /usr/lib/mwadmin/events.sh add sys warn "Router storage is ${ov}% full" >/dev/null 2>&1
+    fi
+    return 0
+}
+
 ar_tick() {
     lock_acquire archive || return 0
+    ar_guard
     mkdir -p "$PL_TMP"
     local usb today tok name i d last ok where now
     usb=$(ar_usb); today=$(ar_today); now=$(date +%s); name=$(ar_name)
@@ -255,6 +284,7 @@ case "${0##*/}" in
         case "$1" in
             seen)   ar_seen ;;
             visits) ar_visits "$2" ;;
+            guard)  ar_guard ;;
             tick)   ar_tick ;;
             status) ar_status ;;
             build)  ar_build "${2:-$(ar_today)}" ;;

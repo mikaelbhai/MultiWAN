@@ -58,3 +58,23 @@ Router 1's RAM disk filled up (the DNS query log reached 120 MB) and its uploads
 succeeds, so they never ran again: on Router 1 since 25 Nov 21:53, on Router 2 since its reboot. Fixed in `site.sh` (a pid
 counts only if `/proc/<pid>` exists); the DNS log is now capped at 8 MB by the sampler and at 16 MB by the events loop.
 Sites visited and app use (already uploaded to the website) are also summarised per device and day into the backup.
+
+## Everything that grows, and where it goes (2026-11-27)
+
+| Data | On the router | Leaves the router to |
+|---|---|---|
+| Event log (`events.log`, flash) | 3 days | website (every minute), USB backup (every hour) |
+| Line and access point history (`history/*.log`, flash) | 3 days (500 lines at most) | USB backup |
+| Devices seen (RAM) | 3 days | website (every minute, connected now), USB backup (`devices.tsv`) |
+| Sites visited, app use (RAM) | the DNS query log is emptied every minute (8 MB cap, 16 MB second cap); summaries 3 days | website (every minute), USB backup |
+| Activity records waiting to upload (RAM) | up to 3 MB, kept only until the website takes them | website |
+| App details for the panel (RAM) | 4000 rows, 6000 address names | (not kept anywhere: live view) |
+| Free-time use (flash) | 3 days | shared with the other router, USB backup |
+| Access requests (flash) | 400 rows | shared with the other router, USB backup |
+| Sign-in list (flash) | **never trimmed** (nobody is forgotten) | shared with the other router, USB backup every day |
+| Traffic totals (`nlbwmon`, RAM) | its own limit (10000 entries a month) | (not kept: live view) |
+| System log (`logread`, RAM) | 128 KB ring | (not kept) |
+
+Safety net (`archive.sh guard`, every 10 minutes): package lists and stray temporary files older than a day are removed;
+when the RAM disk passes 60 % the known caches (package lists, failed-upload copies, DNS query log, old activity records,
+app details) are emptied and an event says how full it was; flash above 80 % raises a warning once a day.
