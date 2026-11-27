@@ -700,7 +700,10 @@ code.wpw { font: 600 13px var(--mono); color: var(--ink); background: var(--inse
     <div id="routers"><div class="skel"></div></div>
     <div class="foot"><a href="BaytaarRouter.apk">
       <svg class="i sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
-      Download the Android app</a></div>
+      Download the Android app</a>
+      <a href="BaytaarInstaller.exe" style="margin-left:18px" title="Puts OpenWrt and the Baytaar software on a new router, and joins it to your account">
+      <svg class="i sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+      Router installer for Windows</a></div>
   </main>
 </div>
 
@@ -1634,6 +1637,7 @@ function addRouterDialog() {
   wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(10,14,20,.55)';
   wrap.innerHTML = '<div class="glass" style="max-width:540px;width:100%;padding:20px 22px;border-radius:16px;max-height:90vh;overflow:auto">' +
     '<h3 style="margin:0 0 6px;font-size:18px">Connect your routers</h3>' +
+    '<p class="mix-note" style="margin:0 0 10px"><b>A new router?</b> The <a href="BaytaarInstaller.exe">router installer for Windows</a> puts OpenWrt and the Baytaar software on a Linksys EA8100 or TP-Link Archer C6 v3 and joins it to your account with the key below. Windows warns that it is from an unknown publisher; choose More info, then Run anyway.</p>' +
     '<div data-body></div></div>';
   var body = wrap.querySelector('[data-body]');
   function close() { document.removeEventListener('keydown', onkey); wrap.remove(); }

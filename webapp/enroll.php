@@ -41,6 +41,24 @@ if (!preg_match('/^[a-z0-9.-]{3,253}$/', $host)) fail(400, 'Bad host.');
 $dir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
 $base = 'https://' . $host . $dir . '/';
 
+// {key, check: true}: the Windows installer asks "is this key good?" before it touches a router. Nothing is created;
+// a wrong key counts against the same limit as a wrong join.
+if (!empty($b['check'])) {
+    $st = $pdo->prepare('SELECT k.label, u.email, (SELECT COUNT(*) FROM user_routers ur WHERE ur.user_id = k.user_id) AS n
+                         FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.revoked = 0');
+    $st->execute([$hash]);
+    $k = $st->fetch();
+    $st->closeCursor();
+    if (!$k) {
+        $pdo->prepare('INSERT INTO enroll_fails (ip, ts) VALUES (?, ?)')->execute([$ip, $now]);
+        usleep(300000);
+        fail(401, 'That key is wrong or has been revoked. Copy it again from "Add a router" on the website.');
+    }
+    $e = (string) $k['email']; $at = strpos($e, '@');
+    json_out(200, ['ok' => true, 'valid' => true, 'account' => substr($e, 0, 1) . '...' . ($at !== false ? substr($e, $at) : ''),
+                   'routers' => (int) $k['n'], 'label' => $k['label']]);
+}
+
 $pdo->exec('BEGIN IMMEDIATE');
 try {
     // ---- the account's reusable key

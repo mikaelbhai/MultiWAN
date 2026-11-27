@@ -10,7 +10,7 @@ Set up on the website: open a router, **Group routers as one location**, pick th
 ## What the person sees (website)
 
 The routers of one place are drawn as **one connection**: in the router picker they are one joined group
-("Rehan Home · one connection": Router 1 main, Router 2 follows), and above the router details a **place panel** shows
+("Home · one connection": Router 1 main, Router 2 follows), and above the router details a **place panel** shows
 Internet → Router 1 → Router 2, one list of **every device on either router** (each tagged with the router it is on),
 and the routers of the place with **Make main**, **Remove** and **Add to <place>** / **Connect a new router**. Routers that are
 not in a place get a "Put your routers together" card. The per-router details are unchanged underneath.

@@ -196,19 +196,25 @@ uci set network.wan1.ipv6='0'
 # peerdns 0: we do NOT want three ISPs each injecting their own resolvers into
 # dnsmasq. DNS is pinned centrally in 50-system-dhcp.sh so that name resolution
 # does not silently change identity on failover.
+# A line with no port (PORT_WAN2/3 empty: fewer lines, the port joins the LAN instead) gets no interface at all;
+# mwan3 then keeps it disabled (WAN2_ENABLED / WAN3_ENABLED = 0).
+if [ -n "$PORT_WAN2" ]; then
 uci set network.wan2='interface'
 uci set network.wan2.device="$PORT_WAN2"
 uci set network.wan2.proto='dhcp'
 uci set network.wan2.metric='20'
 uci set network.wan2.peerdns='0'
 uci set network.wan2.ipv6='0'   # see the WAN1 comment above
+fi
 
+if [ -n "$PORT_WAN3" ]; then
 uci set network.wan3='interface'
 uci set network.wan3.device="$PORT_WAN3"
 uci set network.wan3.proto='dhcp'
 uci set network.wan3.metric='30'
 uci set network.wan3.peerdns='0'
 uci set network.wan3.ipv6='0'   # see the WAN1 comment above
+fi
 
 # --- Guest network (bridge-less, wireless-only) -------------------------------
 if [ "$WIFI_GUEST_ENABLE" = "1" ]; then
