@@ -16,6 +16,8 @@ Baytaar backup/
 | `events.log` | what happened that day (lines, cables, alerts, sign-ins), readable times |
 | `line-history.log` | internet lines and access points going up and down |
 | `devices.tsv` | every device seen that day: first and last time, address, host name, name, Wi-Fi or cable |
+| `sites-visited.tsv` | the sites each device opened that day: first and last time, how many times |
+| `app-usage.tsv` | how much each device used each app that day (MB) |
 | `sign-ins.tsv` | the whole sign-in list as it was that day |
 | `access-requests.tsv` | requests to open a blocked site, and the decisions |
 | `free-time.tsv` | free time used that day |
@@ -47,3 +49,12 @@ On both real routers: Router 2 sent 24, 25 and 26 Nov to the website; Router 1 w
 drive (21 files each), the website then held only Router 2's current day. Both routers' snapshots were unchanged after
 the upgrade. Not tested yet: the drive unplugged (website fallback for Router 1), and the 3-day trim on a day that is
 actually 3 days old (it runs every hour; the first real trim happens on 29 Nov).
+
+## 2026-11-27: the minute jobs had stopped
+
+Router 1's RAM disk filled up (the DNS query log reached 120 MB) and its uploads stopped. Cause: the once-a-minute jobs
+(site tracking, sign-in upkeep, blocking and break times) are skipped while the previous run is alive, checked with
+`kill -0 $(cat minute.pid)`; with the pid file missing (after a reboot, or with /tmp full) BusyBox's `kill -0` with no pid
+succeeds, so they never ran again: on Router 1 since 25 Nov 21:53, on Router 2 since its reboot. Fixed in `site.sh` (a pid
+counts only if `/proc/<pid>` exists); the DNS log is now capped at 8 MB by the sampler and at 16 MB by the events loop.
+Sites visited and app use (already uploaded to the website) are also summarised per device and day into the backup.

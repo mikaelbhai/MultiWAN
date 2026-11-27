@@ -634,7 +634,11 @@ site_watch() {
             # These take 25+ s together (block.sh alone ~20 s). Run them beside
             # the loop, never inside it: the loop also watches the forced line
             # and the line speeds, and must keep its 5 s beat. One copy at a time.
-            if ! kill -0 "$(cat "$MW_RUN/minute.pid" 2>/dev/null)" 2>/dev/null; then
+            # "kill -0" with an empty pid succeeds on BusyBox, so a missing pid file (after a reboot, or when /tmp
+            # was full) used to look like "still running" and the minute jobs never ran again (found 2026-11-27:
+            # stopped for days on both routers). Only a pid that really exists counts as running.
+            mp=$(cat "$MW_RUN/minute.pid" 2>/dev/null)
+            if [ -z "$mp" ] || [ ! -d "/proc/$mp" ]; then
                 (
                     sh /usr/lib/mwadmin/insight.sh sample >/dev/null 2>&1
                     sh /usr/lib/mwadmin/guest.sh tick >/dev/null 2>&1

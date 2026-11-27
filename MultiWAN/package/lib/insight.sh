@@ -157,6 +157,9 @@ apps_disable() {
 # One pass. Called once a minute from site.sh's watch loop.
 apps_sample() {
     [ "$(uget dhcp.@dnsmasq[0].logqueries)" = "1" ] || return 0
+    # The query log lives in RAM and is emptied by every pass. If passes stopped (2026-11-27: it reached 120 MB, filled
+    # /tmp and stopped the uploads), never let it grow past 8 MB, lock or no lock: a minute of lookups is far smaller.
+    [ "$(wc -c < "$DNS_LOG" 2>/dev/null || echo 0)" -gt 8000000 ] && { : > "$DNS_LOG"; log "DNS query log was over 8 MB (passes had stopped); emptied"; }
     lock_acquire apps || return 0
     local lan; lan=$(uget network.lan.ipaddr); lan="${lan%%/*}"; lan="${lan%.*}."
 

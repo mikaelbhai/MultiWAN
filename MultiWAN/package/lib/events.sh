@@ -90,6 +90,8 @@ ev_push() {
     [ "$sent" -gt "$total" ] && sent=0
     # take the spool atomically, so records written meanwhile go to the next push
     rm -f "$act"; [ -s "$ACT_SPOOL" ] && mv "$ACT_SPOOL" "$act"
+    # the sites visited and app use also go into the day's backup (archive.sh), as a per-device summary in RAM
+    [ -s "$act" ] && sh /usr/lib/mwadmin/archive.sh visits "$act" >/dev/null 2>&1
     # sent every minute even with nothing new: the upload is also the
     # heartbeat the website uses to tell the phone app the router went silent
     {
@@ -233,6 +235,8 @@ ev_watch() {
             sh /usr/lib/mwadmin/policy.sh tick >/dev/null 2>&1
             # devices seen today (RAM), and once an hour the daily backup to the USB drive (or the website)
             sh /usr/lib/mwadmin/archive.sh seen >/dev/null 2>&1
+            # a second guard on the RAM disk, independent of the minute jobs in site.sh: the DNS query log never above 16 MB
+            [ "$(wc -c < /tmp/dnsmasq-queries.log 2>/dev/null || echo 0)" -gt 16000000 ] && { : > /tmp/dnsmasq-queries.log; ev_add sys warn "The DNS query log had grown past 16 MB (site tracking had stopped); emptied it"; }
             [ $((n % 60)) -eq 5 ] && sh /usr/lib/mwadmin/archive.sh tick >/dev/null 2>&1
             # shared USB drives follow devices whose address changed (every 3 min)
             [ $((n % 3)) -eq 1 ] && [ -s /etc/mwadmin/drives ] && sh /usr/lib/mwadmin/drive.sh apply >/dev/null 2>&1

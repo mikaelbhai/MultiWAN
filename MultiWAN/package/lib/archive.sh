@@ -57,9 +57,39 @@ ar_seen() {
                    if ($2 != "") ip[$1] = $2; if ($3 != "") ho[$1] = $3; if ($4 != "") na[$1] = $4; wi[$1] = $5 }
         END { for (m in fi) print m, fi[m], la[m], ip[m], ho[m], na[m], wi[m] }' "$f" "$cur" > "$f.new" && mv "$f.new" "$f"
     # RAM only: drop days the router no longer keeps
-    ls "$AR_SEEN" 2>/dev/null | while read -r x; do
-        [ "${x%.tsv}" -lt "$(ar_days_back $AR_KEEP)" ] 2>/dev/null && rm -f "$AR_SEEN/$x"
+    for dir in "$AR_SEEN" "$AR_VIS" "$AR_USE"; do
+        ls "$dir" 2>/dev/null | while read -r x; do
+            [ "${x%.tsv}" -lt "$(ar_days_back $AR_KEEP)" ] 2>/dev/null && rm -f "$dir/$x"
+        done
     done
+}
+
+# ---- sites visited and app use, per device and day (RAM), from the activity records the upload sends -----------------
+# record: kind <TAB> ts <TAB> mac <TAB> ip <TAB> name <TAB> site-or-app <TAB> bytes     (kind v = visit, u = app use)
+AR_VIS="$MW_RUN/visits"; AR_USE="$MW_RUN/usage"
+ar_visits() {    # <activity file>
+    local f="$1" t d
+    [ -s "$f" ] || return 0
+    mkdir -p "$AR_VIS" "$AR_USE"; t="$PL_TMP/act.$$"; mkdir -p "$PL_TMP"
+    awk -F'\t' -v OFS='\t' '$2 ~ /^[0-9]+$/ && ($1 == "v" || $1 == "u") { print strftime("%Y%m%d", $2), $0 }' "$f" > "$t"
+    for d in $(cut -f1 "$t" | sort -u); do
+        case "$d" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) continue ;; esac
+        touch "$AR_VIS/$d.tsv" "$AR_USE/$d.tsv"
+        # visits: mac site first last times ip name
+        awk -F'\t' -v OFS='\t' -v d="$d" '
+            FILENAME == ARGV[1] { k = $1 SUBSEP $2; fi[k] = $3; la[k] = $4; n[k] = $5; ip[k] = $6; na[k] = $7; next }
+            $1 == d && $2 == "v" && $7 != "" { k = $4 SUBSEP $7; if (!(k in fi) || $3 < fi[k]) fi[k] = $3; if ($3 > la[k]) la[k] = $3; n[k]++
+                                               if ($5 != "") ip[k] = $5; if ($6 != "") na[k] = $6 }
+            END { for (k in fi) { split(k, p, SUBSEP); print p[1], p[2], fi[k], la[k], n[k], ip[k], na[k] } }' "$AR_VIS/$d.tsv" "$t" > "$AR_VIS/$d.tsv.new" &&
+            mv "$AR_VIS/$d.tsv.new" "$AR_VIS/$d.tsv"
+        # app use: mac app bytes ip name
+        awk -F'\t' -v OFS='\t' -v d="$d" '
+            FILENAME == ARGV[1] { k = $1 SUBSEP $2; b[k] = $3; ip[k] = $4; na[k] = $5; next }
+            $1 == d && $2 == "u" && $7 != "" { k = $4 SUBSEP $7; b[k] += $8; if ($5 != "") ip[k] = $5; if ($6 != "") na[k] = $6 }
+            END { for (k in b) { split(k, p, SUBSEP); print p[1], p[2], b[k], ip[k], na[k] } }' "$AR_USE/$d.tsv" "$t" > "$AR_USE/$d.tsv.new" &&
+            mv "$AR_USE/$d.tsv.new" "$AR_USE/$d.tsv"
+    done
+    rm -f "$t"
 }
 
 # ---- one day, as one text bundle -----------------------------------------------------------------------------------
@@ -69,6 +99,8 @@ ar_build() {     # <YYYYMMDD>
     echo "@events";   awk -F'|' -v d="$d" '$1 ~ /^[0-9]+$/ && strftime("%Y%m%d", $1) == d' /etc/mwadmin/events.log 2>/dev/null
     echo "@lines";    cat /etc/mwadmin/history/*.log 2>/dev/null | awk -F'|' -v d="$d" '$1 ~ /^[0-9]+$/ && strftime("%Y%m%d", $1) == d'
     echo "@devices";  cat "$AR_SEEN/$d.tsv" 2>/dev/null
+    echo "@visits";   cat "$AR_VIS/$d.tsv" 2>/dev/null
+    echo "@usage";    cat "$AR_USE/$d.tsv" 2>/dev/null
     echo "@signins";  cat /etc/mwadmin/guests 2>/dev/null
     echo "@requests"; cat /etc/mwadmin/site_requests 2>/dev/null
     echo "@freetime"; awk -F'\t' -v d="$d" '$2 == d' /etc/mwadmin/pause_use 2>/dev/null
@@ -89,6 +121,14 @@ ar_write() {     # <backup folder> <router name> <YYYYMMDD> <bundle file>
     { printf 'mac\tfirst seen\tlast seen\taddress\thost name\tname\tconnection\n'
       pl_section "$f" devices | awk -F'\t' -v OFS='\t' '{ print $1, strftime("%H:%M", $2), strftime("%H:%M", $3), $4, $5, $6, ($7 == 1 ? "Wi-Fi" : "cable") }' | sort -t"$TAB" -k2
     } > "$dir/devices.tsv.tmp" && mv "$dir/devices.tsv.tmp" "$dir/devices.tsv" || return 1
+    if grep -qx '@visits' "$f"; then
+        { printf 'mac\tsite\tfirst\tlast\ttimes\taddress\tname\n'
+          pl_section "$f" visits | awk -F'\t' -v OFS='\t' '{ print $1, $2, strftime("%H:%M", $3), strftime("%H:%M", $4), $5, $6, $7 }' | sort -t"$TAB" -k1,1 -k5,5nr
+        } > "$dir/sites-visited.tsv.tmp" && mv "$dir/sites-visited.tsv.tmp" "$dir/sites-visited.tsv" || return 1
+        { printf 'mac\tapp\tMB\taddress\tname\n'
+          pl_section "$f" usage | awk -F'\t' -v OFS='\t' '{ printf "%s\t%s\t%.1f\t%s\t%s\n", $1, $2, $3 / 1000000, $4, $5 }' | sort -t"$TAB" -k1,1 -k3,3nr
+        } > "$dir/app-usage.tsv.tmp" && mv "$dir/app-usage.tsv.tmp" "$dir/app-usage.tsv" || return 1
+    fi
     { printf 'mac\tphone\tsigned in\tname\n'
       pl_section "$f" signins | awk -F'\t' -v OFS='\t' '{ $3 = ($3 ~ /^[0-9]+$/ ? strftime("%Y-%m-%d %H:%M", $3) : $3); print }'
     } > "$dir/sign-ins.tsv.tmp" && mv "$dir/sign-ins.tsv.tmp" "$dir/sign-ins.tsv" || return 1
@@ -99,11 +139,13 @@ ar_write() {     # <backup folder> <router name> <YYYYMMDD> <bundle file>
       pl_section "$f" freetime | awk -F'\t' -v OFS='\t' '{ print $1, $2, $3 }'
     } > "$dir/free-time.tsv.tmp" && mv "$dir/free-time.tsv.tmp" "$dir/free-time.tsv" || return 1
     pl_section "$f" rules > "$dir/rules.txt.tmp" && mv "$dir/rules.txt.tmp" "$dir/rules.txt" || return 1
-    [ -f "$base/READ ME.txt" ] || printf '%s\r\n' \
+    grep -q 'sites-visited' "$base/READ ME.txt" 2>/dev/null || printf '%s\r\n' \
         "Baytaar backup: one folder per router, one folder per day." \
         "events.log            what happened (lines, cables, alerts, sign-ins)" \
         "line-history.log      internet lines and access points going up and down" \
         "devices.tsv           every device seen that day: first and last time, address, name, Wi-Fi or cable" \
+        "sites-visited.tsv     the sites each device opened that day: first and last time, how many times" \
+        "app-usage.tsv         how much each device used each app that day (MB)" \
         "sign-ins.tsv          everyone who has signed in (the whole list, as it was that day)" \
         "access-requests.tsv   requests to open a blocked site, and the decisions" \
         "free-time.tsv         free time used that day" \
@@ -212,6 +254,7 @@ case "${0##*/}" in
     archive.sh)
         case "$1" in
             seen)   ar_seen ;;
+            visits) ar_visits "$2" ;;
             tick)   ar_tick ;;
             status) ar_status ;;
             build)  ar_build "${2:-$(ar_today)}" ;;
