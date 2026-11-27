@@ -236,7 +236,7 @@ ev_watch() {
             # devices seen today (RAM), and once an hour the daily backup to the USB drive (or the website)
             sh /usr/lib/mwadmin/archive.sh seen >/dev/null 2>&1
             # a second guard on the RAM disk, independent of the minute jobs in site.sh: the DNS query log never above 16 MB
-            [ "$(wc -c < /tmp/dnsmasq-queries.log 2>/dev/null || echo 0)" -gt 16000000 ] && { : > /tmp/dnsmasq-queries.log; ev_add sys warn "The DNS query log had grown past 16 MB (site tracking had stopped); emptied it"; }
+            [ "$(wc -c < /tmp/dnsmasq-queries.log 2>/dev/null || echo 0)" -gt "$MW_LIM_DNSLOG2" ] && { : > /tmp/dnsmasq-queries.log; ev_add sys warn "The DNS query log had grown past $((MW_LIM_DNSLOG2 / 1000000)) MB (site tracking had stopped); emptied it"; }
             [ $((n % 60)) -eq 5 ] && sh /usr/lib/mwadmin/archive.sh tick >/dev/null 2>&1
             [ $((n % 10)) -eq 3 ] && sh /usr/lib/mwadmin/archive.sh guard >/dev/null 2>&1
             # shared USB drives follow devices whose address changed (every 3 min)

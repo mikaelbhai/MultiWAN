@@ -71,6 +71,21 @@ mwan3_mode() {
 . /usr/lib/mwadmin/connect.sh
 # What this router can do, for a website to match itself to (/capabilities).
 . /usr/lib/mwadmin/caps.sh
+# Mode 3 (node: cable, mesh, repeater), the Wi-Fi scan and the mesh for nodes (/mode/node, /wifi/scan, /wifi/mesh).
+. /usr/lib/mwadmin/node.sh
+
+# A value for a shell file that is sourced: single-quoted, so nothing in it (a Wi-Fi password) is ever run.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+api_mode_node() {
+    local f="$MW_RUN/node.req" k
+    umask 077; : > "$f"
+    for k in uplink ssid key mesh_id mesh_key channel rep_band rep_ssid rep_key rep_enc; do
+        printf 'NODE_%s=%s\n' "$(echo "$k" | tr 'a-z' 'A-Z')" "$(shq "$(bodyval "$k")")" >> "$f"
+    done
+    sh /usr/lib/mwadmin/modeswitch.sh to-node "$f"
+    rm -f "$f"
+}
 
 api_status() {
     # [a-z0-9]: the name "router2" has a digit (with [a-z] alone it read as no mode and the panel showed "Main router")
@@ -2950,6 +2965,11 @@ api_dispatch() {
 
         /mode:GET)                printf '{"ok":true,"mode":%s}\n' "$(sh /usr/lib/mwadmin/modeswitch.sh mode)" ;;
         /mode/ap:POST)            sh /usr/lib/mwadmin/modeswitch.sh to-ap "$(bodyval bridge_all)" "$(bodyval proto)" "$(bodyval ipaddr)" "$(bodyval netmask)" "$(bodyval gateway)" ;;
+        /mode/node:POST)          api_mode_node ;;
+        /hardware:GET)            sh /usr/lib/mwadmin/hwdetect.sh json ;;
+        /wifi/scan:GET)           node_scan ;;
+        /wifi/mesh:GET)           node_mesh_get ;;
+        /wifi/mesh:POST)          node_mesh_root "$(bodyval enabled)" "$(bodyval mesh_id)" "$(bodyval mesh_key)" "$(bodyval channel)" ;;
         /mode/router2:POST)       sh /usr/lib/mwadmin/modeswitch.sh to-router2 "$(bodyval dhcp)" "$(bodyval lan_ip)" "$(bodyval lan_mask)" "$(bodyval bridge_all)" "$(bodyval proto)" "$(bodyval ipaddr)" "$(bodyval netmask)" "$(bodyval gateway)" ;;
         /mode/router:POST)        sh /usr/lib/mwadmin/modeswitch.sh to-router ;;
         /mode/confirm:POST)       sh /usr/lib/mwadmin/modeswitch.sh confirm ;;

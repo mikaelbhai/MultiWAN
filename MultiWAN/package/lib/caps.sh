@@ -43,6 +43,7 @@ quality|1|Line quality test|/quality|
 connect|1|Connect to a website|/connect|
 shared_settings|1|Settings shared between routers|/policy /policy/sync|
 backup|1|Daily backup to the USB drive|/archive/run|
+node|1|Mode 3: mesh node and repeater|/mode/node /wifi/scan /wifi/mesh|
 software|1|Software update|/software|
 EOF
 }

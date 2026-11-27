@@ -159,7 +159,7 @@ apps_sample() {
     [ "$(uget dhcp.@dnsmasq[0].logqueries)" = "1" ] || return 0
     # The query log lives in RAM and is emptied by every pass. If passes stopped (2026-11-27: it reached 120 MB, filled
     # /tmp and stopped the uploads), never let it grow past 8 MB, lock or no lock: a minute of lookups is far smaller.
-    [ "$(wc -c < "$DNS_LOG" 2>/dev/null || echo 0)" -gt 8000000 ] && { : > "$DNS_LOG"; log "DNS query log was over 8 MB (passes had stopped); emptied"; }
+    [ "$(wc -c < "$DNS_LOG" 2>/dev/null || echo 0)" -gt "$MW_LIM_DNSLOG" ] && { : > "$DNS_LOG"; log "DNS query log was over $((MW_LIM_DNSLOG / 1000000)) MB (passes had stopped); emptied"; }
     lock_acquire apps || return 0
     local lan; lan=$(uget network.lan.ipaddr); lan="${lan%%/*}"; lan="${lan%.*}."
 
@@ -169,7 +169,7 @@ apps_sample() {
     # it was reached through a chain of CNAMEs (www.youtube.com -> ...google.com).
     if [ -s "$DNS_LOG" ]; then
         touch "$A_MAP"
-        awk -v mapf="$A_MAP" '
+        awk -v mapf="$A_MAP" -v lim="$MW_LIM_MAP" '
             BEGIN { while ((getline l < mapf) > 0) { split(l, a, " "); if (!(a[1] in m)) { m[a[1]] = a[2]; ord[++n] = a[1] } } close(mapf) }
             {
                 for (i = 1; i <= NF; i++) if ($i ~ /^query\[/) { qn[$4 $(i - 2)] = $(i + 1); next }
@@ -183,7 +183,7 @@ apps_sample() {
                     next
                 }
             }
-            END { s = n > 6000 ? n - 6000 + 1 : 1; for (i = s; i <= n; i++) print ord[i], m[ord[i]] }
+            END { s = n > lim ? n - lim + 1 : 1; for (i = s; i <= n; i++) print ord[i], m[ord[i]] }
         ' "$DNS_LOG" > "$A_MAP.tmp" && mv "$A_MAP.tmp" "$A_MAP"
         # Site history (only when tracking is on): one record per device and
         # site per minute. The router's own lookups and local names are left out.
@@ -288,8 +288,8 @@ apps_sample() {
             for (k in cur) if (cur[k] >= 20000) printf "u\t%s\t%.0f\n", k, cur[k] > nowf
         }' /proc/net/nf_conntrack
     # keep the destination list small: the 4000 busiest entries
-    if [ "$(wc -l < "$A_DET")" -gt 4000 ]; then
-        sort -t "$(printf '\t')" -k4,4nr "$A_DET" | head -n 4000 > "$A_DET.t" && mv "$A_DET.t" "$A_DET"
+    if [ "$(wc -l < "$A_DET")" -gt "$MW_LIM_DET" ]; then
+        sort -t "$(printf '\t')" -k4,4nr "$A_DET" | head -n "$MW_LIM_DET" > "$A_DET.t" && mv "$A_DET.t" "$A_DET"
     fi
     if [ "$(uget_d mwadmin.sync.track_sites 1)" = "1" ]; then
         ip neigh show 2>/dev/null > "$MW_RUN/neigh.now"
@@ -304,7 +304,7 @@ apps_sample() {
             { m = tolower(mac[$2]); n = (m in who) ? who[m] : nm[$2]
               printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, ts, m, $2, n, $3, $4 }' >> "$ACT_SPOOL"
         rm -f "$A_VIS"
-        [ "$(wc -c < "$ACT_SPOOL" 2>/dev/null || echo 0)" -gt 3000000 ] && { tail -c 2000000 "$ACT_SPOOL" > "$ACT_SPOOL.t"; mv "$ACT_SPOOL.t" "$ACT_SPOOL"; }
+        [ "$(wc -c < "$ACT_SPOOL" 2>/dev/null || echo 0)" -gt "$MW_LIM_SPOOL" ] && { tail -c $((MW_LIM_SPOOL * 2 / 3)) "$ACT_SPOOL" > "$ACT_SPOOL.t"; mv "$ACT_SPOOL.t" "$ACT_SPOOL"; }
     fi
     lock_release apps
 }

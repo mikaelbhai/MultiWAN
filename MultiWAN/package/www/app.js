@@ -244,11 +244,11 @@ function pollStatus() {
   api('/status').then(function (s) {
     var badge = $('#mode-badge');
     badge.textContent = modeName(s.mode);
-    badge.className = 'mode-badge ' + (s.mode === 'ap' ? 'ap' : 'router');
+    badge.className = 'mode-badge ' + ((s.mode === 'ap' || s.mode === 'node') ? 'ap' : 'router');
 
     var chip = $('#active-wan-chip'), lbl = $('#active-wan-label');
     var actives = s.active_wans || (s.active_wan && s.active_wan !== 'none' ? [s.active_wan] : []);
-    if (s.mode === 'ap') {
+    if ((s.mode === 'ap' || s.mode === 'node')) {
       chip.className = 'active-wan'; lbl.textContent = 'Bridged';
     } else if (s.mode === 'router2') {
       chip.className = 'active-wan up'; lbl.textContent = 'Router 2: one uplink';
@@ -267,7 +267,7 @@ function pollStatus() {
     if (s.rollback && s.rollback.pending) {
       rb.hidden = false;
       $('#rb-target').textContent = s.rollback.revert_to === 'ap' ? 'Router 2 (DHCP off)' :
-        s.rollback.revert_to === 'router2' ? 'Router 2' :
+        s.rollback.revert_to === 'router2' ? 'Router 2' : s.rollback.revert_to === 'node' ? 'the node (Mode 3)' :
         s.rollback.revert_to === 'router' ? 'the main router' : 'the previous LAN settings';
       $('#rb-seconds').textContent = s.rollback.seconds_remaining;
     } else { rb.hidden = true; }
@@ -781,7 +781,7 @@ function renderStatusInto(s) {
     var memUsed = s.mem_total_kb ? Math.round((1 - s.mem_avail_kb / s.mem_total_kb) * 100) : 0;
     var actives = s.active_wans || (s.active_wan && s.active_wan !== 'none' ? [s.active_wan] : []);
     var upVal, upSub, upTone;
-    if (s.mode === 'ap') {
+    if ((s.mode === 'ap' || s.mode === 'node')) {
       upVal = 'Bridged'; upSub = 'Router 2, DHCP off'; upTone = '';
     } else if (s.mode === 'router2') {
       upVal = 'WAN1'; upSub = 'Router 2: one uplink, no failover'; upTone = '';
@@ -800,14 +800,14 @@ function renderStatusInto(s) {
       tile('Active uplink', upVal, upSub, upTone) +
       tile('Sharing mode', s.mwan_mode === 'balance' ? 'Load balance' : 'Priority failover',
            s.mwan_mode === 'balance' ? 'multiple WANs share traffic' : 'one WAN at a time', '') +
-      tile('Mode', modeName(s.mode), s.mode === 'ap' ? 'routing disabled' : (s.mode === 'router2' ? 'own network, one uplink' : 'multi-WAN active'), '') +
+      tile('Mode', modeName(s.mode), (s.mode === 'ap' || s.mode === 'node') ? 'routing disabled' : (s.mode === 'router2' ? 'own network, one uplink' : 'multi-WAN active'), '') +
       tile('Uptime', fmtUptime(s.uptime_s), 'load ' + esc(s.load1), '') +
       tile('Memory', memUsed + '%', fmtBytes(s.mem_avail_kb * 1024) + ' available', memUsed > 85 ? 'warn' : '');
   }
 
   var w = $('#dash-wans');
   if (w) {
-    if (s.mode === 'ap') {
+    if ((s.mode === 'ap' || s.mode === 'node')) {
       w.innerHTML = '<div class="empty">The device is in Router 2 mode with DHCP off. It is bridged onto Router 1, so it has no WAN interfaces of its own.</div>';
       return;
     }
@@ -838,7 +838,7 @@ function tile(k, v, s, cls) {
 function renderBwPanels(s) {
   var el = $('#dash-bw');
   if (!el) return;
-  var list = (s.mode === 'ap') ? [{ name: 'lan' }] : (s.wans || []).concat([{ name: 'lan' }]);
+  var list = ((s.mode === 'ap' || s.mode === 'node')) ? [{ name: 'lan' }] : (s.wans || []).concat([{ name: 'lan' }]);
   el.innerHTML = list.map(function (x) {
     return '<div style="margin-bottom:14px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
@@ -2395,104 +2395,172 @@ views.diagnostics = function () {
 /* ======================= operating mode ======================= */
 
 // "ap" is the old access point mode, now Router 2 with DHCP off (joins Router 1’s network).
-function modeName(m) { return m === 'ap' ? 'Router 2 (DHCP off)' : (m === 'router2' ? 'Router 2' : 'Main router'); }
+function modeName(m) {
+  return m === 'node' ? 'Mode 3: node' : (m === 'ap' ? 'Mode 3: node (cable)' : (m === 'router2' ? 'Mode 2: Router 2' : 'Mode 1: main router'));
+}
 
+/* Operating mode. Mode 1 main router (multi-WAN), Mode 2 Router 2 (its own network behind Router 1), Mode 3 node
+   (adds Wi-Fi to Router 2's network: by cable, by Wi-Fi mesh, or by repeating any Wi-Fi). Every change keeps the
+   90-second rollback. */
 views.mode = function () {
   var s = window.__status || {};
   var mode = s.mode || 'router';
-  var isMain = mode === 'router';
-  var dhcpOn = mode !== 'ap';        // the form starts at what is running now (main router: DHCP on)
+  var cur = mode === 'ap' ? 'node' : mode;
+  var pick = cur === 'router' ? 'router2' : cur;                     // the form opens at the next sensible choice
+  var uplink = 'cable', scanList = [];
 
-  var desc = mode === 'router2'
-    ? 'Router 2 with its own network. It has one uplink (plugged into Router 1), gives out its own addresses (DHCP), and runs NAT and a firewall. No multi-WAN.'
-    : mode === 'ap'
-    ? 'Router 2 with DHCP off. All ports are bridged together and the device joins Router 1’s network: it does not route, and Router 1 gives every device its address.'
-    : 'Main router: multi-WAN gateway. Three uplinks with priority failover, NAT, firewall, and a DHCP server on the LAN.';
+  var desc = {
+    router:  'Mode 1, main router: the multi-WAN gateway. Several internet lines with failover, NAT, firewall, and a DHCP server.',
+    router2: 'Mode 2, Router 2: a second router behind the main one, with its own network and its own addresses (DHCP). One uplink, NAT and firewall. No multi-WAN.',
+    node:    'Mode 3, node: adds Wi-Fi to Router 2’s network with the same Wi-Fi name and password, so phones move between them without dropping. It gives out no addresses and does no routing.'
+  };
 
-  page('Operating mode', 'Main router, or Router 2 behind it.',
-    '<div class="card"><div class="card-head"><div><h3>Current mode</h3></div>' +
-      '<span class="mode-badge ' + (mode === 'ap' ? 'ap' : 'router') + '">' + esc(modeName(mode)) + '</span>' +
-      '</div><div class="card-body"><p style="font-size:13.5px;color:var(--text-dim)">' + esc(desc) + '</p></div></div>' +
+  page('Operating mode', 'Main router, Router 2, or a node that extends Router 2’s Wi-Fi.',
+    '<div class="card"><div class="card-head"><div><h3>Now</h3></div>' +
+      '<span class="mode-badge ' + (cur === 'node' ? 'ap' : 'router') + '">' + esc(modeName(mode)) + '</span>' +
+      '</div><div class="card-body"><p style="font-size:13.5px;color:var(--text-dim);margin:0">' + esc(desc[cur] || desc.router) + '</p></div></div>' +
 
-    '<div class="alert alert-info"><strong>Your configuration is preserved either way.</strong> ' +
-      'Making this device Router 2 saves the main-router setup (lines, rules, everything) to flash first. ' +
-      'Returning to the main router restores it exactly, with no reconfiguration.</div>' +
+    '<div class="alert alert-info"><strong>Nothing is lost when you switch.</strong> The main-router setup (lines, rules, everything) ' +
+      'is saved first; going back to Mode 1 restores it exactly. Every change has a 90-second safety net: reconnect and press ' +
+      '<em>Keep this configuration</em> at the top, or the router goes back to how it was.</div>' +
 
-    '<div class="alert alert-warn"><strong>Router 2 has not yet been tried on a real second router.</strong> ' +
-      'The settings it applies were checked on a copy only. Every change is protected by a 90-second rollback: ' +
-      'reconnect and press <em>Keep this configuration</em> in the bar at the top, or the device restores what it had and restarts.</div>' +
+    '<div class="card"><div class="card-head"><h3>Choose a mode</h3></div><div class="card-body">' +
+      '<div class="mode-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">' +
+        tile('router', 'Mode 1', 'Main router', 'Multi-WAN: lines, failover, everything') +
+        tile('router2', 'Mode 2', 'Router 2', 'Its own network behind the main router') +
+        tile('node', 'Mode 3', 'Node', 'Extends Router 2’s Wi-Fi: cable, mesh or repeater') +
+      '</div>' +
 
-    '<div class="card"><div class="card-head"><h3>' + (isMain ? 'Make this device Router 2' : 'Router 2 settings') + '</h3></div><div class="card-body">' +
-      '<label class="switch"><input type="checkbox" id="r2-dhcp"' + (dhcpOn ? ' checked' : '') + '><span class="track"></span>' +
-      '<span>Give out addresses (DHCP)</span></label>' +
-      '<p class="hint">On: Router 2 has its own network and hands out its own addresses. Off: it joins Router 1’s network and Router 1 hands out the addresses.</p>' +
-      '<div id="r2-on">' +
+      '<div id="f-router2" class="mode-form" hidden style="margin-top:16px">' +
         '<div class="form-row">' + f('r2-ip', 'Router 2 network address', '192.168.2.1') + f('r2-mask', 'Subnet mask', '255.255.255.0') + '</div>' +
-        '<p class="hint">Must differ from Router 1’s network (Router 1 is normally 192.168.1.x).</p>' +
+        '<p class="hint">Must differ from the main router’s network. Router 2 always gives out its own addresses; to add Wi-Fi to it without a second network, use Mode 3 on another router.</p>' +
+        '<label class="switch"><input type="checkbox" id="r2-bridge" checked><span class="track"></span><span>Use the spare line ports as LAN ports too</span></label>' +
       '</div>' +
-      '<div id="r2-off" hidden>' +
-        '<label class="field"><span>Address on Router 1’s network</span><select id="r2-proto">' +
-        '<option value="dhcp">Obtain automatically (DHCP)</option><option value="static">Set manually</option></select></label>' +
-        '<div id="r2-static" hidden><div class="form-row">' +
-        f('r2-sip', 'IP address', '192.168.1.2') + f('r2-smask', 'Subnet mask', '255.255.255.0') + f('r2-sgw', 'Router 1', '192.168.1.1') +
-        '</div></div>' +
+
+      '<div id="f-node" class="mode-form" hidden style="margin-top:16px">' +
+        '<div class="seg" role="group" id="n-up" style="margin:0 0 12px">' +
+          '<button data-up="cable" class="on">By cable</button><button data-up="mesh">Wi-Fi mesh</button><button data-up="repeater">Repeat any Wi-Fi</button></div>' +
+        '<p class="hint" id="n-up-hint"></p>' +
+        '<div id="n-rep" hidden>' +
+          '<div class="btn-row"><button class="btn" id="n-scan">Scan for Wi-Fi nearby</button> <span class="hint" id="n-scan-msg"></span></div>' +
+          '<div id="n-scan-list" style="margin:8px 0"></div>' +
+          '<div class="form-row">' + f('n-rssid', 'Wi-Fi to repeat (name)', '') +
+            '<label class="field"><span>Security</span><select id="n-renc"><option value="psk2">WPA2 / WPA3 password</option><option value="sae">WPA3 only</option><option value="none">Open (no password)</option></select></label></div>' +
+          '<div class="form-row"><label class="field"><span>Its password</span><input type="password" id="n-rkey" autocomplete="off"></label>' +
+            '<label class="field"><span>Band</span><select id="n-rband"><option value="5g">5 GHz (faster)</option><option value="2g">2.4 GHz (reaches further)</option></select></label></div>' +
+          '<label class="switch"><input type="checkbox" id="n-same" checked><span class="track"></span><span>Repeat it under the same name and password (devices move between them by themselves)</span></label>' +
+        '</div>' +
+        '<div id="n-wifi">' +
+          '<div class="form-row">' + f('n-ssid', 'Router 2’s Wi-Fi name', '') +
+            '<label class="field"><span>Router 2’s Wi-Fi password</span><input type="password" id="n-key" autocomplete="off"></label></div>' +
+          '<p class="hint" id="n-wifi-hint">This node broadcasts exactly this, with fast roaming, so it is one Wi-Fi with Router 2.</p>' +
+        '</div>' +
+        '<div id="n-mesh" hidden>' +
+          '<div class="form-row">' + f('n-mid', 'Mesh name', '') +
+            '<label class="field"><span>Mesh password</span><input type="password" id="n-mkey" autocomplete="off"></label>' + f('n-mch', '5 GHz channel', '36') + '</div>' +
+          '<p class="hint">Copy these from Router 2: Operating mode, <b>Mesh for nodes</b>. Every member of the mesh must use the same channel.</p>' +
+        '</div>' +
       '</div>' +
-      '<label class="switch" style="margin-top:12px"><input type="checkbox" id="r2-bridge" checked><span class="track"></span>' +
-      '<span>Use the spare line ports as LAN ports too</span></label>' +
-      '<button class="btn btn-danger" id="r2-go" style="margin-top:14px">' + (isMain ? 'Make this device Router 2' : 'Apply change') + '</button>' +
+
+      '<div id="f-router" class="mode-form" hidden style="margin-top:16px"><p class="hint">Restores the saved main-router setup: lines, failover, firewall and DHCP.</p></div>' +
+      '<button class="btn btn-danger" id="m-go" style="margin-top:14px">Switch</button>' +
     '</div></div>' +
 
-    (isMain ? '' :
-      '<div class="card"><div class="card-head"><h3>Return to the main router</h3></div><div class="card-body">' +
-      '<p style="font-size:13.5px;color:var(--text-dim);margin-bottom:14px">Restores your saved multi-WAN configuration, ' +
-      're-enables the firewall and DHCP, and restarts failover tracking.</p>' +
-      '<button class="btn btn-primary" id="to-router">Switch back to the main router</button></div></div>'));
+    // Router 2 (or a main router) is the root of the mesh that wireless nodes join
+    (cur === 'node' ? '' :
+    '<div class="card"><div class="card-head"><h3>Mesh for nodes</h3></div><div class="card-body" id="mesh-card"><span class="badge">checking…</span></div></div>'));
 
-  function sync() {
-    var on = $('#r2-dhcp').checked;
-    $('#r2-on').hidden = !on; $('#r2-off').hidden = on;
+  function tile(id, n, t, sub) {
+    return '<button class="mode-tile" data-mode="' + id + '" style="text-align:left;padding:12px 14px;border-radius:12px;border:1px solid var(--border,#d7dce5);background:var(--surface,#fff);cursor:pointer">' +
+      '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.65">' + n + (id === cur ? ' · now' : '') + '</div>' +
+      '<div style="font-weight:700;font-size:15px;margin:2px 0">' + t + '</div><div style="font-size:12.5px;opacity:.75">' + sub + '</div></button>';
   }
-  $('#r2-dhcp').onchange = sync; sync();
-  $('#r2-proto').onchange = function () { $('#r2-static').hidden = this.value !== 'static'; };
+  function show(m) {
+    pick = m;
+    $$('.mode-tile').forEach(function (b) { var on = b.getAttribute('data-mode') === m; b.style.outline = on ? '2px solid var(--accent,#2563eb)' : 'none'; });
+    ['router', 'router2', 'node'].forEach(function (x) { $('#f-' + x).hidden = x !== m; });
+    $('#m-go').textContent = m === cur && m !== 'node' ? 'Apply change' : (m === 'router' ? 'Switch back to Mode 1' : (m === 'router2' ? 'Make this Router 2' : 'Make this a node'));
+    $('#m-go').disabled = m === 'router' && cur === 'router';
+  }
+  function up(u) {
+    uplink = u;
+    $$('#n-up button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-up') === u); });
+    $('#n-rep').hidden = u !== 'repeater'; $('#n-mesh').hidden = u !== 'mesh';
+    $('#n-wifi').hidden = u === 'repeater' && $('#n-same').checked;
+    $('#n-up-hint').innerHTML = u === 'cable' ? 'Plug any port of this router into Router 2 (or a switch behind it). Simplest and fastest.'
+      : u === 'mesh' ? 'No cable: this node links to Router 2 over 5 GHz Wi-Fi. Turn on <b>Mesh for nodes</b> on Router 2 first, then place this node where Router 2’s Wi-Fi is still good.'
+      : 'Joins any Wi-Fi nearby as a device and boosts it. Devices on this router get their addresses from that Wi-Fi.';
+    $('#n-wifi-hint').textContent = u === 'repeater' ? 'The Wi-Fi this router broadcasts (its own name and password).' : 'This node broadcasts exactly this, with fast roaming, so it is one Wi-Fi with Router 2.';
+  }
+  $$('.mode-tile').forEach(function (b) { b.onclick = function () { show(b.getAttribute('data-mode')); }; });
+  $$('#n-up button').forEach(function (b) { b.onclick = function () { up(b.getAttribute('data-up')); }; });
+  $('#n-same').onchange = function () { up(uplink); };
+  show(pick); up('cable');
 
-  $('#r2-go').onclick = function () {
-    var on = $('#r2-dhcp').checked;
-    confirmModal(isMain ? 'Make this device Router 2?' : 'Apply this change?',
-      '<p><strong>' + (on ? 'Router 2 will have its own network.' : 'Router 2 will join Router 1’s network.') + '</strong></p>' +
-      '<ul style="margin:10px 0 0 18px">' +
-      (isMain ? '<li>Multi-WAN failover stops here. The main-router setup is saved, not deleted.</li>' : '') +
-      (on ? '<li>Its address becomes ' + esc($('#r2-ip').value) + '. Reconnect to that address.</li>'
-          : '<li>The DHCP server is switched off and the firewall and NAT are disabled.</li><li>Its address becomes whatever Router 1 assigns.</li>') +
-      '</ul><p style="margin-top:12px">You have 90 seconds to reconnect and confirm, or it reverts automatically.</p>',
-      'Apply').then(function (go) {
+  $('#n-scan').onclick = function () {
+    var b = this; b.disabled = true; $('#n-scan-msg').textContent = 'Scanning… (about 10 seconds)';
+    api('/wifi/scan').then(function (r) {
+      b.disabled = false; scanList = r.networks || [];
+      $('#n-scan-msg').textContent = scanList.length ? scanList.length + ' found. Pick one:' : 'Nothing found. Type the name below instead.';
+      $('#n-scan-list').innerHTML = scanList.map(function (n, i) {
+        var bars = n.signal >= -60 ? 'strong' : (n.signal >= -72 ? 'good' : 'weak');
+        return '<button class="btn btn-sm" data-net="' + i + '" style="margin:3px">' + esc(n.ssid) + ' <span style="opacity:.6">· ' + (n.band === '5g' ? '5 GHz' : '2.4 GHz') + ' · ' + bars + ' · ' + esc(n.security === 'none' ? 'open' : n.label) + '</span></button>';
+      }).join('');
+      $$('[data-net]').forEach(function (x) {
+        x.onclick = function () {
+          var n = scanList[+x.getAttribute('data-net')];
+          $('#n-rssid').value = n.ssid; $('#n-renc').value = n.security; $('#n-rband').value = n.band; $('#n-rkey').focus();
+        };
+      });
+    }).catch(function (e) { b.disabled = false; $('#n-scan-msg').textContent = e.message; });
+  };
+
+  $('#m-go').onclick = function () {
+    var m = pick, body, route, what;
+    if (m === 'router') {
+      route = '/mode/router'; body = {}; what = '<p>The saved main-router setup is restored and failover restarts. Reconnect at the main router’s address.</p>';
+    } else if (m === 'router2') {
+      route = '/mode/router2'; what = '<p>This router gets its own network at ' + esc($('#r2-ip').value) + '. Reconnect at that address.</p>';
+      body = { dhcp: '1', lan_ip: $('#r2-ip').value, lan_mask: $('#r2-mask').value, bridge_all: $('#r2-bridge').checked ? '1' : '0' };
+    } else {
+      route = '/mode/node';
+      var same = uplink === 'repeater' && $('#n-same').checked;
+      body = { uplink: uplink, ssid: same ? '' : $('#n-ssid').value, key: same ? '' : $('#n-key').value,
+               mesh_id: $('#n-mid').value, mesh_key: $('#n-mkey').value, channel: $('#n-mch').value,
+               rep_band: $('#n-rband').value, rep_ssid: $('#n-rssid').value, rep_key: $('#n-rkey').value, rep_enc: $('#n-renc').value };
+      what = uplink === 'repeater'
+        ? '<p>This router joins <b>' + esc(body.rep_ssid) + '</b> and repeats it. It hands out no addresses; that Wi-Fi does. Reach this router afterwards through its Wi-Fi, or by cable at 192.168.199.1.</p>'
+        : '<p>This router joins Router 2’s network ' + (uplink === 'mesh' ? 'over the Wi-Fi mesh' : 'by cable') + ' and broadcasts <b>' + esc(body.ssid) + '</b>. It hands out no addresses; Router 2 does.</p>';
+      what += '<p style="margin-top:8px">Mode 3 has not yet been tried on real hardware: if you cannot reconnect, it goes back by itself after 90 seconds.</p>';
+    }
+    confirmModal('Switch to ' + modeName(m === 'node' ? 'node' : m) + '?', what + '<p style="margin-top:10px">You have 90 seconds to reconnect and confirm.</p>', 'Switch').then(function (go) {
       if (!go) return;
-      api('/mode/router2', { method: 'POST', body: {
-        dhcp: on ? '1' : '0', lan_ip: $('#r2-ip').value, lan_mask: $('#r2-mask').value,
-        bridge_all: $('#r2-bridge').checked ? '1' : '0', proto: $('#r2-proto').value,
-        ipaddr: $('#r2-sip').value, netmask: $('#r2-smask').value, gateway: $('#r2-sgw').value
-      }}).then(function (r) {
+      api(route, { method: 'POST', body: body }).then(function (r) {
         toast(r.message, 'ok');
-        $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' +
-          'Applying. Reconnect to the device at its new address, then confirm within 90 seconds.</div>';
+        $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' + esc(r.message) + '</div>';
       }).catch(function (e) { toast(e.message, 'error'); });
     });
   };
 
-  if (!isMain) {
-    $('#to-router').onclick = function () {
-      confirmModal('Return to the main router?',
-        '<p>Your saved multi-WAN configuration will be restored and failover tracking will restart.</p>' +
-        '<p style="margin-top:10px">The device returns to its own LAN subnet, so you will need to reconnect ' +
-        'and confirm within 90 seconds.</p>', 'Switch back', false).then(function (go) {
-        if (!go) return;
-        api('/mode/router', { method: 'POST' }).then(function (r) {
-          toast(r.message, 'ok');
-          $('#view').innerHTML = '<div class="empty"><span class="spinner"></span><br><br>' +
-            'Restoring the main router. Reconnect and confirm within 90 seconds.</div>';
-        }).catch(function (e) { toast(e.message, 'error'); });
-      });
+  // ---- Mesh for nodes (this router as the root) ----
+  if (cur !== 'node') api('/wifi/mesh').then(function (m) {
+    var el = $('#mesh-card'); if (!el) return;
+    var rnd = function (n) { var a = 'abcdefghjkmnpqrstuvwxyz23456789', s = ''; for (var i = 0; i < n; i++) s += a[Math.floor(Math.random() * a.length)]; return s; };
+    if (!m.has_5g) { el.innerHTML = '<p class="hint" style="margin:0">This router has no 5 GHz radio, so wireless nodes cannot join it. Cable nodes can.</p>'; return; }
+    el.innerHTML = '<p class="hint" style="margin-top:0">Wireless nodes (Mode 3, Wi-Fi mesh) link to this router over 5 GHz. Turning this on also switches on fast roaming here, ' +
+        'so phones move between this router and its nodes without dropping. Only the Wi-Fi restarts.</p>' +
+      '<label class="switch"><input type="checkbox" id="mesh-on"' + (m.enabled ? ' checked' : '') + '><span class="track"></span><span>Mesh for nodes</span></label>' +
+      '<div class="form-row" style="margin-top:10px">' + f('mesh-id', 'Mesh name', m.id || ('baytaar-mesh-' + rnd(4))) + f('mesh-key', 'Mesh password', m.key || rnd(12)) + f('mesh-ch', '5 GHz channel', m.channel && m.channel !== 'auto' ? m.channel : '36') + '</div>' +
+      '<p class="hint">On each wireless node enter: Wi-Fi name <b>' + esc(m.ssid || '') + '</b> and its password, and this mesh name, mesh password and channel.' +
+        (m.mesh_software ? '' : ' The Wi-Fi mesh software is installed the first time (the router needs internet).') + '</p>' +
+      '<button class="btn" id="mesh-save">Save</button>';
+    $('#mesh-save').onclick = function () {
+      var b = this; b.disabled = true;
+      api('/wifi/mesh', { method: 'POST', body: { enabled: $('#mesh-on').checked ? '1' : '0', mesh_id: $('#mesh-id').value, mesh_key: $('#mesh-key').value, channel: $('#mesh-ch').value } })
+        .then(function (r) { toast(r.message, 'ok'); b.disabled = false; })
+        .catch(function (e) { toast(e.message, 'error'); b.disabled = false; });
     };
-  }
+  }).catch(function () { var el = $('#mesh-card'); if (el) el.innerHTML = '<p class="hint" style="margin:0">Not available on this router yet.</p>'; });
 };
 
 /* ======================= system ======================= */

@@ -40,6 +40,7 @@ function web_features(): array {
         'connect'         => ['Connect to a website',                  1, ['/connect']],
         'shared_settings' => ['Settings shared between routers',       1, ['/policy', '/policy/sync']],
         'backup'          => ['Daily backup to the USB drive',         1, ['/archive/run']],
+        'node'            => ['Mode 3: mesh node and repeater',        1, ['/mode/node', '/wifi/scan', '/wifi/mesh']],
         'software'        => ['Software update',                       1, ['/software']],
     ];
 }

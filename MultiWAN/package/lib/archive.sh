@@ -217,7 +217,7 @@ ar_guard() {
     find /tmp/cache/apk -type f -mtime +0 2>/dev/null | while read -r f; do rm -f "$f"; done
     find /tmp -maxdepth 1 -type f \( -name '*.new' -o -name '*.tmp' -o -name 't_*.sh' \) -mtime +0 2>/dev/null | while read -r f; do rm -f "$f"; done
     use=$(df /tmp 2>/dev/null | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
-    if [ "${use:-0}" -ge 60 ]; then
+    if [ "${use:-0}" -ge "$MW_LIM_GUARD" ]; then
         rm -rf /tmp/cache/apk 2>/dev/null && freed="$freed package lists,"
         rm -f /tmp/mwadmin-push.failed.json /tmp/mwadmin-push.failed.resp && freed="$freed failed-upload copies,"
         [ -s /tmp/dnsmasq-queries.log ] && { : > /tmp/dnsmasq-queries.log; freed="$freed DNS query log,"; }

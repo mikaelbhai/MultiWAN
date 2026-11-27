@@ -9,6 +9,18 @@ MW_PROFILES="$MW_STATE/profiles"
 
 mkdir -p "$MW_RUN/ports" "$MW_RUN/locks" "$MW_STATE/portdata" "$MW_PROFILES" 2>/dev/null
 
+# Memory profile. A router with 128 MB of memory (under ~200 MB: /tmp is then only ~60 MB) runs the same software with
+# smaller RAM caches and earlier clean-up; everything else, the website connection included, is the same (docs/14).
+# MW_LIM_* are the limits every RAM cache uses.
+MW_MEM_KB=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null)
+if [ "${MW_MEM_KB:-0}" -gt 0 ] && [ "${MW_MEM_KB:-0}" -lt 200000 ]; then
+    MW_LOWMEM=1
+    MW_LIM_DNSLOG=2000000; MW_LIM_DNSLOG2=4000000; MW_LIM_SPOOL=1000000; MW_LIM_DET=1500; MW_LIM_MAP=2500; MW_LIM_GUARD=45
+else
+    MW_LOWMEM=0
+    MW_LIM_DNSLOG=8000000; MW_LIM_DNSLOG2=16000000; MW_LIM_SPOOL=3000000; MW_LIM_DET=4000; MW_LIM_MAP=6000; MW_LIM_GUARD=60
+fi
+
 # ---------------------------------------------------------------------------
 # JSON emission
 # ---------------------------------------------------------------------------

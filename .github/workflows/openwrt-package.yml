@@ -1,0 +1,42 @@
+name: OpenWrt package
+
+# Builds the universal baytaar-multiwan package (scripts and web pages only, so one build works on every router):
+# .apk for OpenWrt 25.12 and .ipk for OpenWrt 24.10, with the official OpenWrt SDK containers.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['MultiWAN/**', 'openwrt/**', 'build_fw.py', '.github/workflows/openwrt-package.yml']
+
+jobs:
+  build:
+    name: OpenWrt ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['25.12.6', '24.10.8']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Baytaar bundle and stage the package files
+        run: |
+          python3 build_fw.py "package build ${{ github.sha }}"
+          python3 openwrt/stage_root.py
+
+      - name: Build the package with the OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: x86_64-${{ matrix.release }}
+          FEED_DIR: ${{ github.workspace }}/openwrt
+          PACKAGES: baytaar-multiwan
+          NO_SHFMT_CHECK: 1
+          NO_REFRESH_CHECK: 1
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: baytaar-multiwan-openwrt-${{ matrix.release }}
+          path: |
+            bin/packages/*/action/baytaar-multiwan*
+          if-no-files-found: error

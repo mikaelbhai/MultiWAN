@@ -221,6 +221,28 @@ apply_router2_mode() {
 }
 
 # --- Apply Router mode --------------------------------------------------------
+# --- Apply mode 3 (node) ----------------------------------------------------------------------------------------------------
+# Replaces "Router 2 with DHCP off": bridged like the access point mode above (no DHCP, no routing), plus the uplink
+# chosen for this node and Router 2's Wi-Fi name and password with fast roaming. See lib/node.sh and docs/14.
+# Reads NODE_UPLINK (cable|mesh|repeater), NODE_SSID, NODE_KEY, NODE_MESH_ID, NODE_MESH_KEY, NODE_CHANNEL,
+# NODE_REP_BAND, NODE_REP_SSID, NODE_REP_KEY, NODE_REP_ENC.
+apply_node_mode() {
+    . /usr/lib/mwadmin/node.sh
+    apply_ap_mode 1 dhcp
+    uci -q delete wireless.mwmesh; uci -q delete wireless.mwsta; uci -q delete network.wwan; uci -q delete network.mwrelay
+    case "$NODE_UPLINK" in
+        cable)    node_wifi_align "$NODE_SSID" "$NODE_KEY" ;;
+        mesh)     node_wifi_align "$NODE_SSID" "$NODE_KEY"
+                  node_mesh_iface "$NODE_MESH_ID" "$NODE_MESH_KEY" "$NODE_CHANNEL" || return 1 ;;
+        repeater) node_repeater "$NODE_REP_BAND" "$NODE_REP_SSID" "$NODE_REP_KEY" "$NODE_REP_ENC" "$NODE_SSID" "$NODE_KEY" || return 1 ;;
+        *) return 1 ;;
+    esac
+    uci set mwadmin.node='node'; uci set mwadmin.node.uplink="$NODE_UPLINK"
+    uci commit
+    [ -n "$MW_DRY" ] || echo node > "$MODE_FILE"
+    log "mode 3 (node, $NODE_UPLINK) applied"
+}
+
 apply_router_mode() {
     log "restoring Router mode from saved profile"
     profile_restore router || return 1
@@ -300,7 +322,7 @@ _rollback_timer() {
     # used for a plain LAN IP/netmask revert) restore config files without
     # representing a mode of their own, so MODE_FILE is left untouched.
     case "$restore_to" in
-        router|ap|router2) echo "$restore_to" > "$MODE_FILE" ;;
+        router|ap|router2|node) echo "$restore_to" > "$MODE_FILE" ;;
     esac
     rm -f "$PENDING_FILE" "$TIMER_FILE"
     # Reboot rather than reload: the failed mode left services in an unknown
@@ -439,6 +461,66 @@ switch_to_role2() {
     ( sleep 2; /etc/init.d/network restart; /etc/init.d/firewall restart; wifi reload ) >/dev/null 2>&1 &
 }
 
+# Mode 3: <request file> holds NODE_* values (single-quoted, written by api.sh). Same safety as the other modes:
+# snapshot, build from the main-router profile, apply, 90 s rollback unless confirmed.
+node_load() {
+    [ -f "$1" ] || { json_error "No node settings were given."; return 1; }
+    . "$1"
+    case "$NODE_UPLINK" in cable|mesh|repeater) ;; *) json_error "Choose how this node connects: cable, mesh or repeater."; return 1 ;; esac
+    if [ "$NODE_UPLINK" = "repeater" ]; then
+        [ -n "$NODE_REP_SSID" ] || { json_error "Choose or type the Wi-Fi to repeat."; return 1; }
+        [ "$NODE_REP_ENC" = "none" ] || [ ${#NODE_REP_KEY} -ge 8 ] || { json_error "Enter that Wi-Fi's password (8 characters or more)."; return 1; }
+    else
+        [ -n "$NODE_SSID" ] || { json_error "Enter Router 2's Wi-Fi name: nodes use the same one."; return 1; }
+        [ ${#NODE_KEY} -ge 8 ] || { json_error "Enter Router 2's Wi-Fi password (8 characters or more)."; return 1; }
+    fi
+    if [ "$NODE_UPLINK" = "mesh" ]; then
+        [ -n "$NODE_MESH_ID" ] && [ ${#NODE_MESH_KEY} -ge 8 ] || { json_error "Enter the mesh name and mesh password shown on Router 2 (Wi-Fi, Mesh for nodes)."; return 1; }
+        case "$NODE_CHANNEL" in ''|*[!0-9]*) NODE_CHANNEL=36 ;; esac
+    fi
+    return 0
+}
+
+switch_to_node() {         # <request file>
+    node_load "$1" || return 1
+    . /usr/lib/mwadmin/node.sh
+    local cur; cur=$(current_mode)
+    # the extra Wi-Fi software is fetched NOW, while this router still has its current connection
+    if [ "$NODE_UPLINK" = "mesh" ]; then node_pkg mesh || { json_error "Could not install the Wi-Fi mesh software. Connect this router to the internet and try again."; return 1; }; fi
+    if [ "$NODE_UPLINK" = "repeater" ]; then node_pkg relay || { json_error "Could not install the repeater software (relayd). Connect this router to the internet and try again."; return 1; }; fi
+    if [ "$cur" = "router" ]; then profile_save router
+    else
+        profile_exists router || { json_error "No saved main-router profile exists."; return 1; }
+        profile_save "$cur"; profile_restore router
+    fi
+    apply_node_mode || { profile_restore "$cur"; json_error "Mode 3 could not be applied; nothing was changed."; return 1; }
+    rm -f "$1"
+    local secs="$ROLLBACK_SECONDS" msg
+    if arm_rollback "$cur"; then
+        case "$NODE_UPLINK" in
+            repeater) msg="Mode 3 (repeater) applied. It now joins that Wi-Fi; connect to this router's Wi-Fi and confirm within 90 seconds, or it returns to how it was." ;;
+            mesh)     msg="Mode 3 (mesh node) applied. Confirm within 90 seconds from Router 2's network, or it returns to how it was." ;;
+            *)        msg="Mode 3 (cable node) applied. Plug it into Router 2 and confirm within 90 seconds, or it returns to how it was." ;;
+        esac
+    else
+        secs=0; msg="Mode 3 applied, but the automatic revert timer FAILED TO START. Recover with failsafe mode if you cannot reconnect."
+    fi
+    json_ok "$(printf '%s,%s,%s' "$(jstr mode node)" "$(jnum rollback_seconds "$secs")" "$(jstr message "$msg")")"
+    ( sleep 2; /etc/init.d/network restart; wifi reload ) >/dev/null 2>&1 &
+}
+
+preview_node() {           # <request file>: the result on a COPY of the settings
+    node_load "$1" >/dev/null || { cat "$1" >/dev/null 2>&1; echo "invalid settings"; return 1; }
+    local d=/tmp/mw-preview.$$
+    rm -rf "$d"; mkdir -p "$d"
+    for c in $CONFIGS mwadmin; do [ -f "/etc/config/$c" ] && cp "/etc/config/$c" "$d/$c"; done
+    ( export MW_DRY=1 MW_UCI_DIR="$d"; apply_node_mode ) >/dev/null 2>&1
+    echo "--- network"; uci -c "$d" show network | grep -E "^network\.(wan[123]|wwan|mwrelay|lan|br_lan)(\.|=)"
+    echo "--- dhcp";    uci -c "$d" show dhcp | grep -E "dhcp\.lan\.ignore|dnsmasq\[0\]\.port"
+    echo "--- wireless"; uci -c "$d" show wireless | grep -E "\.(ssid|mode|network|ieee80211r|mobility_domain|mesh_id|encryption|channel|device)=" | grep -v "\.key="
+    rm -rf "$d"
+}
+
 # What a Router 2 change would do, on a COPY of the settings: prints the resulting network and DHCP lines.
 # Nothing running is touched. Usage: modeswitch.sh preview <dhcp 0|1> [lan_ip] [lan_mask]
 preview_role2() {
@@ -458,6 +540,8 @@ case "$1" in
     to-router)       switch_to_router ;;
     to-router2)      switch_to_role2 "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
     preview)         preview_role2 "$2" "$3" "$4" ;;
+    to-node)         switch_to_node "$2" ;;
+    preview-node)    preview_node "$2" ;;
     confirm)         confirm_switch ;;
     rollback-status) rollback_status ;;
     save-profile)    profile_save "$2" ;;
