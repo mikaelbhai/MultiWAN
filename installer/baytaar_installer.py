@@ -289,76 +289,116 @@ class App(tk.Tk):
         self.bg(work)
 
     # ---- 2 model -------------------------------------------------------------------------------------------------
+    # One search over every router OpenWrt supports (its own list, the release the website recommends); the models
+    # tested with Baytaar are listed under it, and come first in the results. The OpenWrt Firmware Selector link is
+    # optional: it shows the chosen model on openwrt.org.
     def p_model(self):
         f = self.clear()
-        self.head(f, "Which router is it, exactly?", "Look at the sticker under the router: the model and its hardware version both matter. "
-                  "A wrong choice can make the router unusable.")
+        self.head(f, "Which router is it, exactly?", "Search for the model on the sticker under the router: the model and its "
+                  "hardware version both matter. A wrong choice can make the router unusable.")
         self.v_model = tk.StringVar(value=(self.state_["model"] or {}).get("id", ""))
-        for m in MODELS:
-            box = tk.Frame(f, bg="white", highlightthickness=1, highlightbackground="#d7dce5"); box.pack(fill="x", pady=5)
-            ttk.Radiobutton(box, text=m["title"], value=m["id"], variable=self.v_model).pack(anchor="w", padx=10, pady=(8, 0))
-            ttk.Label(box, text=m["label"] + "  " + m["status"], style="Sub.TLabel", wraplength=500).pack(anchor="w", padx=34, pady=(0, 8))
-        ttk.Radiobutton(f, text="Something else: find it in OpenWrt's list of supported routers", value="other", variable=self.v_model,
-                        command=self._other_toggle).pack(anchor="w", pady=(8, 0))
-        self.other_box = tk.Frame(f, bg="white")
-        r = tk.Frame(self.other_box, bg="white"); r.pack(anchor="w", fill="x")
-        ttk.Label(r, text="Model on the sticker:").pack(side="left")
-        self.v_search = tk.StringVar(); e = ttk.Entry(r, textvariable=self.v_search, width=40); e.pack(side="left", padx=6)
+        r = tk.Frame(f, bg="white"); r.pack(anchor="w", fill="x")
+        ttk.Label(r, text="Search:").pack(side="left")
+        self.v_search = tk.StringVar(value=(self.state_["model"] or {}).get("title", "") if (self.state_["model"] or {}).get("generic") else "")
+        e = ttk.Entry(r, textvariable=self.v_search, width=52); e.pack(side="left", padx=6); e.focus_set()
         self.v_search.trace_add("write", lambda *a: self._other_filter())
-        self.other_list = tk.Listbox(self.other_box, height=6, width=78, font=("Segoe UI", 10), activestyle="none", exportselection=False)
-        self.other_list.pack(anchor="w", pady=(6, 0))
-        self.other_hint = ttk.Label(self.other_box, text="Type the brand and model, e.g. Archer C7 or Xiaomi AX3000T, then pick the exact hardware version.",
-                                    style="Sub.TLabel", wraplength=540)
+        self.other_hint = ttk.Label(f, text="Loading OpenWrt's list of routers...", style="Sub.TLabel", wraplength=560)
         self.other_hint.pack(anchor="w", pady=(4, 0))
-        self.model_msg = ttk.Label(f, text="", style="Bad.TLabel", wraplength=540); self.model_msg.pack(anchor="w", pady=8, side="bottom")
+        self.other_list = tk.Listbox(f, height=5, width=80, font=("Segoe UI", 10), activestyle="none", exportselection=False)
+        self.other_list.pack(anchor="w", pady=(4, 0))
+        self.other_list.bind("<<ListboxSelect>>", lambda ev: self._other_pick())
+        self.owrt_link = tk.Label(f, text="", bg="white", fg="#1d4ed8", cursor="hand2", font=("Segoe UI", 10, "underline"))
+        self.owrt_link.pack(anchor="w", pady=(6, 0))
+        self.owrt_link.bind("<Button-1>", lambda ev: self._owrt_open())
+        ttk.Label(f, text="Tested with Baytaar:", style="Sub.TLabel").pack(anchor="w", pady=(10, 2))
+        for m in MODELS:
+            box = tk.Frame(f, bg="white", highlightthickness=1, highlightbackground="#d7dce5"); box.pack(fill="x", pady=3)
+            ttk.Radiobutton(box, text=m["title"], value=m["id"], variable=self.v_model, command=self._tested_pick).pack(anchor="w", padx=10, pady=(5, 0))
+            ttk.Label(box, text=m["label"] + "  " + m["status"], style="Sub.TLabel", wraplength=470).pack(anchor="w", padx=34, pady=(0, 5))
+        self.model_msg = ttk.Label(f, text="", style="Bad.TLabel", wraplength=560); self.model_msg.pack(anchor="w", pady=6, side="bottom")
         self._other_rows = []
-        if self.v_model.get() == "other" or (self.state_["model"] or {}).get("generic"): self.v_model.set("other"); self._other_toggle()
+        self._owrt_paint()
+        self._load_overview()
 
-    # every router OpenWrt supports (its own list, the release the website recommends): id, target, title
-    def _other_toggle(self):
-        if self.v_model.get() != "other": self.other_box.pack_forget(); return
-        self.other_box.pack(anchor="w", fill="x", pady=(4, 0))
-        if getattr(self, "_overview", None) is not None: return self._other_filter()
-        self.other_hint.configure(text="Loading OpenWrt's list of routers...")
+    def _load_overview(self):
+        if getattr(self, "_overview", None) is not None:
+            self.other_hint.configure(text="%d routers OpenWrt supports. Type the brand and model, e.g. Archer C7 or Xiaomi AX3000T, then pick the exact version." % len(self._overview[1]))
+            return self._other_filter()
         def work():
             try:
                 ver = FALLBACK_OPENWRT
                 if self.state_["site"]:
-                    st, j = http_json("https://%s/router/fw/openwrt.json" % self.state_["site"])
-                    if st == 200: ver = j.get("default") or ver
+                    try:
+                        st, j = http_json("https://%s/router/fw/openwrt.json" % self.state_["site"])
+                        if st == 200: ver = j.get("default") or ver
+                    except Exception: pass
                 st, ov = http_json("https://downloads.openwrt.org/releases/%s/.overview.json" % ver, timeout=60)
                 rows = []
                 for p in ov.get("profiles", []):
                     for t in p.get("titles", []):
                         title = " ".join(x for x in (t.get("vendor", ""), t.get("model", ""), t.get("variant", "")) if x) or t.get("title", "")
                         rows.append((title, p["id"], p["target"]))
-                rows.sort(key=lambda x: x[0].lower())
+                tested = {m["id"] for m in MODELS}
+                rows.sort(key=lambda x: (x[1] not in tested, x[0].lower()))
                 self._overview = (ver, rows)
-                self.ui(lambda: (self.other_hint.configure(text="%d routers. Type the brand and model, then pick the exact hardware version." % len(rows)), self._other_filter()))
+                self.ui(self._load_overview)
             except Exception as ex:
                 err = str(ex)
-                self.ui(lambda: self.other_hint.configure(text="Could not load OpenWrt's list: %s" % err))
+                self.ui(lambda: self.other_hint.configure(text="Could not load OpenWrt's list (%s). Pick a tested model below, or use the link." % err))
         self.bg(work)
 
     def _other_filter(self):
         if getattr(self, "_overview", None) is None: return
-        q = [w for w in self.v_search.get().lower().replace("-", " ").split() if w]
+        q = [w for w in self.v_search.get().lower().replace("-", " ").replace("(", " ").replace(")", " ").split() if w]
         rows = [r for r in self._overview[1] if all(w in (r[0] + " " + r[1]).lower().replace("-", " ") for w in q)] if q else []
         self._other_rows = rows[:200]
+        tested = {m["id"] for m in MODELS}
         self.other_list.delete(0, "end")
-        for r in self._other_rows: self.other_list.insert("end", "%s     (%s)" % (r[0], r[1]))
+        for r in self._other_rows:
+            self.other_list.insert("end", "%s     (%s)%s" % (r[0], r[1], "   tested with Baytaar" if r[1] in tested else ""))
+        if q and not rows: self.other_hint.configure(text="No router matches. Try fewer words, e.g. only the model number.")
+        elif q: self.other_hint.configure(text="%d match%s. Click the exact model and version." % (len(rows), "" if len(rows) == 1 else "es"))
+        self._owrt_paint()
+
+    def _other_pick(self):
+        sel = self.other_list.curselection()
+        if not sel: return
+        pid = self._other_rows[sel[0]][1]
+        self.v_model.set(pid if any(m["id"] == pid for m in MODELS) else "other")
+        self.model_msg.configure(text=""); self._owrt_paint()
+
+    def _tested_pick(self):
+        self.other_list.selection_clear(0, "end"); self.model_msg.configure(text=""); self._owrt_paint()
+
+    def _owrt_choice(self):
+        # (title, profile id, target) of what is chosen now, or None
+        sel = self.other_list.curselection() if hasattr(self, "other_list") else ()
+        if sel: return self._other_rows[sel[0]]
+        m = next((x for x in MODELS if x["id"] == self.v_model.get()), None)
+        return (m["title"], m["id"], m["target"]) if m else None
+
+    def _owrt_paint(self):
+        c = self._owrt_choice()
+        self.owrt_link.configure(text=("See the %s on OpenWrt's Firmware Selector (optional)" % c[0]) if c
+                                 else "Open OpenWrt's Firmware Selector to look a router up (optional)")
+
+    def _owrt_open(self):
+        c = self._owrt_choice()
+        ver = self._overview[0] if getattr(self, "_overview", None) else FALLBACK_OPENWRT
+        url = "https://firmware-selector.openwrt.org/"
+        if c: url += "?" + urllib.parse.urlencode({"version": ver, "target": c[2], "id": c[1]})
+        webbrowser.open(url)
 
     def n1(self):
+        sel = self.other_list.curselection() if hasattr(self, "other_list") else ()
         v = self.v_model.get()
-        if v == "other":
-            sel = self.other_list.curselection() if hasattr(self, "other_list") else ()
-            if not sel: return self.model_msg.configure(text="Search for the router and click its exact model and version in the list.")
+        if sel and v == "other":
             title, pid, target = self._other_rows[sel[0]]
             self.state_["model"] = {"id": pid, "title": title, "board": "", "target": target, "stock": "generic", "usb": False, "generic": True,
                                     "status": "Supported by OpenWrt; not tested with the Baytaar software yet."}
             return self.show(2)
         m = next((x for x in MODELS if x["id"] == v), None)
-        if not m: return self.model_msg.configure(text="Pick the model on the sticker.")
+        if not m: return self.model_msg.configure(text="Search for the router and click its exact model and version, or pick a tested one.")
         self.state_["model"] = m; self.show(2)
 
     # ---- 3 OpenWrt ---------------------------------------------------------------------------------------------------
