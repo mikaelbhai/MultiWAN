@@ -2438,8 +2438,8 @@ views.mode = function () {
       '</div>' +
 
       '<div id="f-node" class="mode-form" hidden style="margin-top:16px">' +
-        '<div class="seg" role="group" id="n-up" style="margin:0 0 12px">' +
-          '<button data-up="cable" class="on">By cable</button><button data-up="mesh">Wi-Fi mesh</button><button data-up="repeater">Repeat any Wi-Fi</button></div>' +
+        '<div class="btn-row" role="group" id="n-up" style="margin:0 0 12px">' +
+          '<button class="btn btn-sm btn-primary" data-up="cable">By cable</button><button class="btn btn-sm" data-up="mesh">Wi-Fi mesh</button><button class="btn btn-sm" data-up="repeater">Repeat any Wi-Fi</button></div>' +
         '<p class="hint" id="n-up-hint"></p>' +
         '<div id="n-rep" hidden>' +
           '<div class="btn-row"><button class="btn" id="n-scan">Scan for Wi-Fi nearby</button> <span class="hint" id="n-scan-msg"></span></div>' +
@@ -2471,20 +2471,20 @@ views.mode = function () {
     '<div class="card"><div class="card-head"><h3>Mesh for nodes</h3></div><div class="card-body" id="mesh-card"><span class="badge">checking…</span></div></div>'));
 
   function tile(id, n, t, sub) {
-    return '<button class="mode-tile" data-mode="' + id + '" style="text-align:left;padding:12px 14px;border-radius:12px;border:1px solid var(--border,#d7dce5);background:var(--surface,#fff);cursor:pointer">' +
-      '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.65">' + n + (id === cur ? ' · now' : '') + '</div>' +
-      '<div style="font-weight:700;font-size:15px;margin:2px 0">' + t + '</div><div style="font-size:12.5px;opacity:.75">' + sub + '</div></button>';
+    return '<button class="mode-tile" data-mode="' + id + '" style="text-align:left;padding:12px 14px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font:inherit">' +
+      '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-mute)">' + n + (id === cur ? ' · now' : '') + '</div>' +
+      '<div style="font-weight:700;font-size:15px;margin:2px 0;color:var(--text)">' + t + '</div><div style="font-size:12.5px;color:var(--text-dim)">' + sub + '</div></button>';
   }
   function show(m) {
     pick = m;
-    $$('.mode-tile').forEach(function (b) { var on = b.getAttribute('data-mode') === m; b.style.outline = on ? '2px solid var(--accent,#2563eb)' : 'none'; });
+    $$('.mode-tile').forEach(function (b) { var on = b.getAttribute('data-mode') === m; b.style.outline = on ? '2px solid var(--accent)' : 'none'; b.style.background = on ? 'var(--accent-soft)' : 'var(--surface)'; });
     ['router', 'router2', 'node'].forEach(function (x) { $('#f-' + x).hidden = x !== m; });
     $('#m-go').textContent = m === cur && m !== 'node' ? 'Apply change' : (m === 'router' ? 'Switch back to Mode 1' : (m === 'router2' ? 'Make this Router 2' : 'Make this a node'));
     $('#m-go').disabled = m === 'router' && cur === 'router';
   }
   function up(u) {
     uplink = u;
-    $$('#n-up button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-up') === u); });
+    $$('#n-up button').forEach(function (b) { b.classList.toggle('btn-primary', b.getAttribute('data-up') === u); });
     $('#n-rep').hidden = u !== 'repeater'; $('#n-mesh').hidden = u !== 'mesh';
     $('#n-wifi').hidden = u === 'repeater' && $('#n-same').checked;
     $('#n-up-hint').innerHTML = u === 'cable' ? 'Plug any port of this router into Router 2 (or a switch behind it). Simplest and fastest.'
